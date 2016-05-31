@@ -1,5 +1,5 @@
 import numpy as np
-import readRateFile as rates
+import readLAMDA as rates
 import scipy.constants as sc
 from scipy.interpolate import griddata
 
