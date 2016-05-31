@@ -39,7 +39,7 @@ All functions are designed to work with standard LIME output.
 
 #### Continuum
 
-`getContinuum()`  -Returns the continuum calcualted from the first channel.
+`getContinuum()` - Returns the continuum calcualted from the first channel.
     
 `removeContiuum()` - Returns data with the continuum subtracted. Note this is a simple subtraction, only the first channel is removed from all channels. Make sure the first channel is free of line emission.
     
@@ -53,6 +53,7 @@ All functions are designed to work with standard LIME output.
  
 `swapedgescenters(centers=None, edges=None)` -Swaps between bin centers and edges. 
 
-##### References
 
+---
+##### References
 [1] - Joanes, D. N.; Gill, C. A. (1998). "Comparing measures of sample skewness and kurtosis". Journal of the Royal Statistical Society (Series D): The Statistician 47 (1): 183–189. doi:10.1111/1467-9884.00122.
