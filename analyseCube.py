@@ -168,12 +168,7 @@ class LIMEoutput:
             edg = np.append(edg, 2.*centers[-1]-edg[-1])
             return edg
         if edges is not None:
-            cnt = np.zeros(edges.size-1)
-            cnt[0] = edges[:2].mean()
-            for i in range(1, edges.size-1):
-                cnt[i] = edges[i+1]-cnt[i-1]
-            return cnt
-    
+   	    return np.average([edges[1:], edges[:-1]], axis=0) 
     
     def getRadialPoints(self):
         if  not hasattr(self, 'rvals'):
