@@ -5,15 +5,18 @@ Scripts to help analyse [LIME](https://github.com/lime-rt/lime) output.
 ---
 ---
 
-## `readLAMDA`
+## `readLAMDA.py`
 
 Provides a class to read in the [LAMDA](http://home.strw.leidenuniv.nl/~moldata/) rate files and provide easy access to the variables.
 
-An instance is created with
+An instance is created simplying by providing the path to the collisional rate file.
 
 ```python
-ratefile('path/to/file')
+file = ratefile('path/to/file')
 ```
+
+Then you have access to all the attributes.
+
 ---
 ---
 
