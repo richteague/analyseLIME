@@ -1,3 +1,5 @@
+import numpy as np
+
 def RADEXnames(key):
 
     # Switch between RADEX names and numbers for collision partners.
@@ -17,8 +19,6 @@ def RADEXnames(key):
 class ratefile:
 
     # Read in a LAMDA rate file. Very rough for now.
-
-    import numpy as np
 
     def __init__(self, fn):
         with open(fn) as f:
