@@ -74,7 +74,7 @@ class population:
         self.r = np.sign(self.true_p) * self.true_r
         self.z = self.true_z
 
-        self.npts  = npts
+        self.npts  = int(npts)
         self.rgrid = np.linspace(-abs(self.r).max(), self.r.max(), self.npts)
         self.zgrid = np.linspace(-abs(self.z).max(), self.z.max(), self.npts)
 
@@ -103,27 +103,99 @@ class population:
         self.excitationte_i = None
         self.excitationte_j = None
 
+        self.absorpcoeff = None
+        self.absorpcoe_i = None
+        self.absorpcoe_j = None
+
+        self.raytrace = None
+        self.raytra_i = None
+        self.raytra_j = None
+
+        self.maxz = None
+        self.minz = None
+        self.maxr = None
+        self.minr = None
+        self.rotz = None
+        self.minc = None
+
         return
 
 
 
     ## Gridding Functions ##
 
+    # TODO: If the bins are empty, prune them.
     # gridcolumn - grid the given column with the given inclination.
 
-    def gridcolumn(self, col, inc=0., method='nearest'):
-        arr = griddata((self.r_proj(inc), self.z_proj(inc)), self.data[int(col)],
+    def calcGridColumn(self, col, inc=0.):
+        return griddata((self.r_proj(inc), self.z_proj(inc)), self.data[int(col)],
                        (self.rgrid_proj(inc)[None,:], self.zgrid_proj(inc)[:,None]),
-                       method=method, fill_value=0.)
-        if method is not 'nearest':
-            return arr
-        else:
-            tmp = griddata((self.r_proj(inc), self.z_proj(inc)), self.data[4],
-                           (self.rgrid_proj(inc)[None,:], self.zgrid_proj(inc)[:,None]),
-                           method='linear', fill_value=np.nan)
-            return np.where(np.isnan(tmp), np.nan, arr)
+                       method='nearest')
 
+    def getGridColumn(self, col, inc=0.):
+        return self.clipArray(self.calcGridColumn(col, inc=inc), inc=inc)
 
+    def getBinMax(self, arr, idxs, i, inc=0):
+        try:
+            maxval = arr[idxs == i].max()
+        except ValueError:
+            maxval = 0.
+        return maxval
+
+    def getBinMin(self, arr, idxs, i, inc=0):
+        try:
+            minval = arr[idxs == i].min()
+        except ValueError:
+            minval = 0.
+        return minval
+
+    def getModelBounds(self, inc=0.):
+        if self.maxz is None:
+
+            idxs = np.digitize(self.r_proj(inc), self.centerstoedges(self.rgrid_proj(inc)))
+            self.maxz = np.array([[self.getBinMax(self.z_proj(inc), idxs, i, inc=inc)
+                                   for i in np.arange(1, self.npts+1)]])
+            self.minz = np.array([[self.getBinMin(self.z_proj(inc), idxs, i, inc=inc)
+                                   for i in np.arange(1, self.npts+1)]])
+
+            idxs = np.digitize(self.z_proj(inc), self.centerstoedges(self.zgrid_proj(inc)))
+            self.maxr = np.array([[self.getBinMax(self.r_proj(inc), idxs, i, inc=inc)
+                                   for i in np.arange(1, self.npts+1)]])
+            self.minr = np.array([[self.getBinMin(self.r_proj(inc), idxs, i, inc=inc)
+                                   for i in np.arange(1, self.npts+1)]])
+            self.minc = [inc]
+
+        elif inc not in self.minc:
+            idxs = np.digitize(self.r_proj(inc), self.centerstoedges(self.rgrid_proj(inc)))
+            maxz = np.array([self.getBinMax(self.z_proj(inc), idxs, i, inc=inc)
+                             for i in np.arange(1, self.npts+1)])
+            minz = np.array([self.getBinMin(self.z_proj(inc), idxs, i, inc=inc)
+                             for i in np.arange(1, self.npts+1)])
+            self.maxz = np.vstack([self.maxz, [maxz]])
+            self.minz = np.vstack([self.minz, [minz]])
+
+            idxs = np.digitize(self.z_proj(inc), self.centerstoedges(self.zgrid_proj(inc)))
+            maxr = np.array([self.getBinMax(self.r_proj(inc), idxs, i, inc=inc)
+                             for i in np.arange(1, self.npts+1)])
+            minr = np.array([self.getBinMin(self.r_proj(inc), idxs, i, inc=inc)
+                             for i in np.arange(1, self.npts+1)])
+            self.maxr = np.vstack([self.maxr, [maxr]])
+            self.minr = np.vstack([self.minr, [minr]])
+            self.minc.append(inc)
+
+        return self.minr[self.minc.index(inc)], self.maxr[self.minc.index(inc)], self.minz[self.minc.index(inc)], self.maxz[self.minc.index(inc)]
+
+    def clipArray(self, arr, inc=0., mask=np.nan):
+        minr, maxr, minz, maxz = self.getModelBounds(inc=inc)
+
+        rarr = self.rgrid_proj(inc)[None,:] * np.ones(self.npts)[:,None]
+        arr = np.where(rarr > maxr[:,None]*np.ones(self.npts)[None,:], mask, arr)
+        arr = np.where(rarr < minr[:,None]*np.ones(self.npts)[None,:], mask, arr)
+
+        zarr = self.zgrid_proj(inc)[:,None] * np.ones(self.npts)[None,:]
+        arr = np.where(zarr > maxz[None,:]*np.ones(self.npts)[:,None], mask, arr)
+        arr = np.where(zarr < minz[None,:]*np.ones(self.npts)[:,None], mask, arr)
+        return arr
 
     ## Rotation Functions ##
 
@@ -133,17 +205,24 @@ class population:
         return self.r * np.cos(inc) - self.z * np.sin(inc)
 
     def z_proj(self, inc):
-        return self.r * np.sin(inc) + self.z * np.cos(inc)
+        if inc == 0:
+            return self.z
+        else:
+            return self.r * np.sin(inc) + self.z * np.cos(inc)
 
     def rgrid_proj(self, inc):
-        r = self.r_proj(inc)
-        z = self.z_proj(inc)
-        return np.linspace(-abs(r).max(), abs(r).max(), self.npts)
+        if inc == 0.:
+            return self.rgrid
+        else:
+            r = self.r_proj(inc)
+            return np.linspace(-abs(r).max(), abs(r).max(), self.npts)
 
     def zgrid_proj(self, inc):
-        r = self.r_proj(inc)
-        z = self.z_proj(inc)
-        return np.linspace(-abs(z).max(), abs(z).max(), self.npts)
+        if inc == 0.:
+            return self.zgrid
+        else:
+            z = self.z_proj(inc)
+            return np.linspace(-abs(z).max(), abs(z).max(), self.npts)
 
 
 
@@ -154,34 +233,34 @@ class population:
 
     def getDensity(self, log=False, inc=0.):
         if self.densities is None:
-            self.densities = np.array([self.gridcolumn(3, inc=inc)])
+            self.densities = np.array([self.getGridColumn(3, inc=inc)])
             self.density_i = [inc]
         elif inc not in self.density_i:
-            self.densities = np.vstack([self.densities, [self.gridcolumn(3, inc=inc)]])
+            self.densities = np.vstack([self.densities, [self.getGridColumn(3, inc=inc)]])
             self.density_i.append(inc)
         if log:
             return np.log10(self.densities[self.density_i.index(inc)])
         else:
             return self.densities[self.density_i.index(inc)]
 
-    def getKineticTemp(self, log=False, inc=0):
-        if self.densities is None:
-            self.kinetictemp = np.array([self.gridcolumn(4, inc=inc)])
+    def getKineticTemp(self, log=False, inc=0.):
+        if self.kinetictemp is None:
+            self.kinetictemp = np.array([self.getGridColumn(4, inc=inc)])
             self.kineticte_i = [inc]
-        elif inc not in self.density_i:
-            self.kinetictemp = np.vstack([self.kinetictemp, [self.gridcolumn(4, inc=inc)]])
+        elif inc not in self.kineticte_i:
+            self.kinetictemp = np.vstack([self.kinetictemp, [self.getGridColumn(4, inc=inc)]])
             self.kineticte_i.append(inc)
         if log:
             return np.log10(self.kinetictemp[self.kineticte_i.index(inc)])
         else:
             return self.kinetictemp[self.kineticte_i.index(inc)]
 
-    def getRelAbundance(self, log=False, inc=0):
-        if self.densities is None:
-            self.relabund = np.array([self.gridcolumn(5, inc=inc)])
+    def getRelAbundance(self, log=False, inc=0.):
+        if self.relabund is None:
+            self.relabund = np.array([self.getGridColumn(5, inc=inc)])
             self.relabu_i = [inc]
-        elif inc not in self.density_i:
-            self.relabund = np.vstack([self.relabund, [self.gridcolumn(5, inc=inc)]])
+        elif inc not in self.relabu_i:
+            self.relabund = np.vstack([self.relabund, [self.getGridColumn(5, inc=inc)]])
             self.relabu_i.append(inc)
         if log:
             return np.log10(self.relabund[self.relabu_i.index(inc)])
@@ -226,7 +305,7 @@ class population:
             return np.array([self.rgrid, 2.*sigma])
 
     def getAbundanceWeightedProfile(self, c, sampling=1):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getAbundance(), sampling=sampling)
+        return self.weightedprofile(self.getGridColumn(int(c)), self.getAbundance(), sampling=sampling)
 
 
 
@@ -238,7 +317,7 @@ class population:
 
     def getLevelPopulations(self, J, inc=0):
         if self.levelpops is None:
-            self.levelpops = np.array([self.gridcolumn(int(7+J), inc=inc)])
+            self.levelpops = np.array([self.getGridColumn(int(7+J), inc=inc)])
             self.levelpo_i = [inc]
             self.levelpo_j = [J]
         idx = np.where(np.logical_and(self.levelpo_i == np.array(inc),
@@ -246,7 +325,7 @@ class population:
         idx = np.squeeze(idx)
         if idx.size == 0:
             self.levelpops = np.vstack([self.levelpops,
-                                        [self.gridcolumn(int(7+J), inc=inc)]])
+                                        [self.getGridColumn(int(7+J), inc=inc)]])
             self.levelpo_i.append(inc)
             self.levelpo_j.append(J)
             idx = np.where(np.logical_and(self.levelpo_i == np.array(inc),
@@ -260,22 +339,18 @@ class population:
     def getLevelRatios(self, J, inc=0):
         a = self.getLevelAbundance(J, inc=inc) * self.LAMDA.weights[J+1]
         b = self.getLevelAbundance(J+1, inc=inc) * self.LAMDA.weights[J]
-        return a/b
+        return self.clipArray(a/b, mask=0., inc=inc)
 
     def getExcitationTemp(self, J, inc=0.):
         if self.excitationtemp is None:
-            Tex = sc.h * self.LAMDA.frequencies[J]
-            Tex /= sc.k * np.log(self.getLevelRatios(J, inc=inc))
-            self.excitationtemp = np.array([Tex])
+            self.excitationtemp = np.array([calcExcitationTemp(J, inc=inc)])
             self.excitationte_i = [inc]
             self.excitationte_j = [J]
         idx = np.where(np.logical_and(self.excitationte_i == np.array(inc),
                                       self.excitationte_j == np.array(J)))
         idx = np.squeeze(idx)
         if idx.size == 0:
-            Tex = sc.h * self.LAMDA.frequencies[J]
-            Tex /= sc.k * np.log(self.getLevelRatios(J, inc=inc))
-            self.excitationtemp = np.vstack([self.excitationtemp, [Tex]])
+            self.excitationtemp = np.vstack([self.excitationtemp, [calcExcitationTemp(J, inc=inc)]])
             self.excitationte_i.append(inc)
             self.excitationte_j.append(J)
             idx = np.where(np.logical_and(self.excitationte_i == np.array(inc),
@@ -283,14 +358,142 @@ class population:
             idx = np.squeeze(idx)
         return self.excitationtemp[idx]
 
+    def calcExcitationTemp(self, J, inc=0.):
+        Tex = sc.h * self.LAMDA.frequencies[J]
+        Tex /= sc.k * np.log(self.getLevelRatios(J, inc=inc))
+        return Tex
+
     def getLevelWeightedProfile(self, c, J, sampling=1):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getLevelAbundance(J), sampling=sampling)
+        return self.weightedprofile(self.getGridColumn(int(c)), self.getLevelAbundance(J), sampling=sampling)
 
 
+
+    ## Radiative Transfer Functions ##
+
+    # Functions to calculate radtiative transfer properites. Solve basic radiative transfer problem.
+
+    def getEmissionCoeff(self, J, inc=0.):
+        emiss = sc.h * self.LAMDA.frequencies[J] * self.LAMDA.EinsteinA[J]
+        emiss *= self.getPhi(self.LAMDA.frequencies[J], inc=inc) / 4. / np.pi
+        emiss *= self.getLevelAbundance(J+1, inc=inc) * 1e6
+        return self.clipArray(emiss, inc=inc, mask=0.)
+
+    def getAbsorptionCoeff(self, J, inc=0.):
+        if self.absorpcoeff is None:
+            self.absorpcoeff = np.array([self.calcAbsorptionCoeff(J, inc=inc)])
+            self.absorpcoe_i = [inc]
+            self.absorpcoe_j = [J]
+        idx = np.where(np.logical_and(self.absorpcoe_i == np.array(inc),
+                                      self.absorpcoe_j == np.array(J)))
+        idx = np.squeeze(idx)
+        if idx.size == 0:
+            self.absorpcoeff = np.vstack([self.absorpcoeff, [self.calcAbsorptionCoeff(J, inc=inc)]])
+            self.absorpcoe_i.append(inc)
+            self.absorpcoe_j.append(J)
+        idx = np.where(np.logical_and(self.absorpcoe_i == np.array(inc),
+                                  self.absorpcoe_j == np.array(J)))
+        idx = np.squeeze(idx)
+        return self.absorpcoeff[idx]
+
+    def calcAbsorptionCoeff(self, J, inc=0.):
+        alpha = self.LAMDA.EinsteinA[J] * self.LAMDA.weights[J+1]
+        alpha *= self.getPhi(self.LAMDA.frequencies[J], inc=inc)
+        alpha *= sc.c**2 / 8. / np.pi / self.LAMDA.weights[J]
+        alpha *= self.getLevelAbundance(J, inc=inc) * 1e6
+        alpha /= self.LAMDA.frequencies[J]**2.
+        alpha *= (1. - 1. / self.getLevelRatios(J, inc=inc))
+        return self.clipArray(alpha, mask=0., inc=inc)
+
+    def getTau(self, J, inc=0., negtau=True):
+        tau = self.getAbsorptionCoeff(J, inc=inc)
+        tau *= (self.zgrid[1]-self.zgrid[0]) * sc.au
+        tau = self.clipArray(tau, mask=0., inc=inc)
+        if not negtau:
+            return np.where(tau < 0., 0., tau)
+        else:
+            return tau
+
+    def getPhi(self, freq, avgmu=2.34, inc=0.):
+        width = np.sqrt(2. * sc.k * self.getKineticTemp(inc=inc) / self.LAMDA.mu / sc.m_p)
+        width *= freq / sc.c
+        return self.normgaussian(0., 0., width)
+
+    def getSourceFunction(self, J, inc=0.):
+        S = self.getEmissionCoeff(J, inc=inc) / self.getAbsorptionCoeff(J, inc=inc)
+        return np.where(np.isfinite(S), S, 0.)
+
+    def getCumTau(self, J, direction='down', inc=0.):
+        tau = self.getTau(J, inc=inc)
+        if direction is 'down':
+            ctau = np.array([[np.nansum(tau[j:,i]) for i in range(int(self.npts))]
+                              for j in range(int(self.npts))])
+        elif direction is 'up':
+            ctau = np.array([[np.nansum(tau[:j,i]) for i in range(int(self.npts))]
+                              for j in range(int(self.npts))])
+        else:
+            raise ValueError
+        return ctau
+
+    def getTotalIntensity(self, J, inc=0.):
+        return self.getRayTrace(J, inc=inc)[-1]
+
+    def getCellIntensity(self, J, inc=0.):
+        I = self.getSourceFunction(J, inc=inc)
+        I *= (1. - np.exp(-1. * self.getTau(J, inc=inc)))
+        return self.clipArray(I, inc=inc)
+
+    def getFluxWeights(self, J, inc=0.):
+        totalI = self.getTotalIntensity(J, inc=inc)
+        totalI = totalI[None,:] * np.ones(self.npts)[:,None]
+        cellI = self.getCellIntensity(J, inc=inc)
+        cellI *= np.exp(-1. * self.getCumTau(J, inc=inc, direction='down'))
+        fval = cellI / totalI
+        return self.clipArray(fval, inc=inc, mask=0.)
+
+    def getRayTrace(self, J, inc=0.):
+        if self.raytrace is None:
+            self.raytrace = np.array([self.calcRayTrace(J, inc=inc)])
+            self.raytra_i = [inc]
+            self.raytra_j = [J]
+        idx = np.where(np.logical_and(self.raytra_i == np.array(inc),
+                                      self.raytra_j == np.array(J)))
+        idx = np.squeeze(idx)
+        if idx.size == 0:
+            self.raytrace = np.vstack([self.raytrace, [self.calcRayTrace(J, inc=inc)]])
+            self.raytra_i.append(inc)
+            self.raytra_j.append(J)
+        idx = np.where(np.logical_and(self.raytra_i == np.array(inc),
+                                      self.raytra_j == np.array(J)))
+        idx = np.squeeze(idx)
+        return self.raytrace[idx]
+
+    def calcRayTrace(self, J, inc=0.):
+        t = self.getTau(J, inc=inc)
+        S = self.getSourceFunction(J, inc=inc)
+        I = np.zeros(t.shape)
+        for i in range(self.npts):
+            for j in range(self.npts):
+                if j > 0:
+                    a = I[j-1,i] * np.exp(-1. * t[j,i])
+                else:
+                    a = 0.
+                I[j,i] = a + (1. - np.exp(-1. * t[j,i])) * S[j,i]
+        return I
+
+    def getSourceWeightedProfile(self, c, J):
+        return self.weightedprofile(self.gridcolumn(int(c)), self.getAbundance()*self.getSourceFunction(J))
+
+
+    # Find the radial flux weighted profile.
+    def getFluxWeightedProfile(self, c, J, dV=None, mach=0., taulim=1.0):
+        return self.weightedprofile(self.gridcolumn(int(c)), self.getFluxWeights(J, dV=dV, mach=mach, taulim=taulim))
 
     ## Miscellaneous Functions ##
 
     # Miscellaneous functions to help with other functions.
+
+    def normgaussian(self, x, mu, sig):
+        return np.exp(-0.5 * np.power((x - mu) / sig, 2.)) / sig / np.sqrt(np.pi * 2.)
 
     def runningmean(self, data, sampling):
         csum = np.cumsum(np.insert(data, 0, 0))
@@ -322,135 +525,6 @@ class population:
         return np.array([rax, avg, std])
 
 
-
-    ## Radiative Transfer Functions ##
-
-    # Functions to calculate radtiative transfer properites.
-    # TODO: lots.
-
-
-    def getSourceWeightedProfile(self, c, J):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getAbundance()*self.getSourceFunction(J))
-
-
-    # Find the radial flux weighted profile.
-    def getFluxWeightedProfile(self, c, J, dV=None, mach=0., taulim=1.0):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getFluxWeights(J, dV=dV, mach=mach, taulim=taulim))
-
-    # Normalised Gaussian function.
-    def normgaussian(self, x, mu, sig):
-        return np.exp(-0.5 * np.power((x - mu) / sig, 2.)) / sig / np.sqrt(np.pi * 2.)
-
-
-    # Calculate the line profile, assuming broadened Guassians..
-    def calcPhi(self, dV=None, mach=0., avgmu=2.34, freq=None):
-        width = np.sqrt((mach**2 / avgmu + 2. / self.LAMDA.mu) * sc.k * self.getKineticTemp() / sc.m_p)
-        if freq is not None:
-            width *= freq / sc.c
-        if (dV is not None) or (dV == 0.):
-            velax = np.linspace(-dV/2., dV/2., 200.)
-            if freq is not None:
-                velax *= freq / sc.c
-            phi = np.zeros(width.shape)
-            for i in range(width.shape[1]):
-                for j in range(width.shape[0]):
-                    if np.isfinite(width[j,i]):
-                        phi[j,i] = np.trapz(self.normgaussian(velax, 0., width[j,i]), x=velax)
-                    else:
-                        phi[j,i] = np.nan
-        else:
-            phi = self.normgaussian(0., 0., width)
-        return phi
-
-
-    # Return the line profile integrated over some bandwidth in [m/s] assuming some Mach number.
-    def getPhi(self, freq=None, dV=None, mach=0., avgmu=2.34):
-        if not (hasattr(self, 'phi') and
-               (dV == self.lastdV) and
-               (mach == self.lastmach) and
-               (freq == self.lastfreq) and
-               (avgmu == self.lastavgmu)):
-            print 'Recalculating phi...'
-            self.lastdV = dV
-            self.lastmach = mach
-            self.lastfreq = freq
-            self.lastavgmu = avgmu
-            self.phi = self.calcPhi(dV=dV, mach=mach, avgmu=avgmu, freq=freq)
-        return self.phi
-
-
-    # Calculate the absorption coefficient.
-    def getAbsorptionCoeff(self, J, dV=None, mach=0.):
-        alpha = self.LAMDA.EinsteinA[J] * self.LAMDA.weights[J+1]
-        alpha *= sc.c**2 / 8. / np.pi / self.LAMDA.weights[J]
-        alpha *= self.getLevelAbundance(J) * 1e6 / self.LAMDA.frequencies[J]**2.
-        alpha *= (1. - 1./self.getLevelRatios(J))
-        return alpha * self.getPhi(dV=dV, mach=mach, freq=self.LAMDA.frequencies[J])
-
-
-    # Calculate the source function.
-    def getSourceFunction(self, J):
-        S = 2. * sc.h * self.LAMDA.frequencies[J]**3 / sc.c**2
-        S /= (self.getLevelRatios(J) - 1.)
-        return np.where(np.isfinite(S), S, 0.)
-
-
-    # Calculate the optical depth of each cell.
-    def getTau(self, J, dV=None, mach=0.):
-        dz = (self.ygrid[1]-self.ygrid[0]) * sc.au
-        tau = self.getAbsorptionCoeff(J, dV, mach) * dz
-        return np.where(np.isfinite(tau), tau, 0.)
-
-
-    # Calculate the cumulative optical depth.
-    def getcTau(self, J, dV=None, mach=0., direction='down'):
-        tau = self.getTau(J, dV, mach)
-        if direction == 'up':
-            ctau = np.array([[np.sum(tau[j:,i]) for i in range(self.xgrid.size)]
-                       for j in range(self.ygrid.size)])
-            return np.where(np.isnan(self.template), np.nan, ctau)
-        elif direction != 'down':
-            print "Wrong direction value: %s.\nAssuming 'down'." % direction
-        ctau = np.array([[np.sum(tau[:-j,i]) for i in range(self.xgrid.size)]
-                               for j in range(self.ygrid.size)])
-        return np.where(np.isnan(self.template), np.nan, ctau)
-
-
-    # Integrate ray along the column.
-    def calcColumn(self, J, dV=None, mach=0.):
-        if not (hasattr(self, 'I') and
-                (self.lastJ_int == J) and
-                (self.lastdV_int == dV) and
-                (self.lastmach_int == mach)):
-            tau = self.getTau(J, dV=dV, mach=mach)
-            Snu = self.getSourceFunction(J)
-            I = np.zeros(tau.shape)
-            for i in range(self.xgrid.size):
-                for j in range(self.ygrid.size):
-                    if j > 0:
-                        a = I[j-1,i] * np.exp(-1. * tau[j,i])
-                    else:
-                        a = 0.
-                    I[j,i] = a + (1. - np.exp(-1. * tau[j,i])) * Snu[j,i]
-            self.I = I
-        return self.I[-1,:], np.where(np.isnan(self.template), np.nan, self.I)
-
-    def getFluxWeights(self, J, dV=None, mach=0., taulim=1.):
-        if not (hasattr(self, 'fluxweight') and
-                (self.lastJ_fweight == J) and
-                (self.lastdV_fweight == dV) and
-                (self.lastmach_fweight == mach) and
-                (self.lasttaulim_fweight == taulim)):
-            flux = (1. - np.exp(-1. * self.getTau(J, dV=dV, mach=mach)))
-            flux *= self.getSourceFunction(J)
-            flux = np.where(self.getcTau(J, dV=dV, mach=mach, direction='down') <= taulim, flux, -0.)
-            weight = flux * (1.-np.exp(-1. * self.getcTau(J, dV=dV, mach=mach, direction='up')))
-            weight /= np.nansum(weight, axis=0)[None, :]
-            self.fluxweight = np.where(np.isnan(self.template), np.nan, weight)
-        return self.fluxweight
-
-
-
     ## Convenience Functions ##
 
     # Functions which also return the projected grids to help with plotting
@@ -465,8 +539,8 @@ class population:
     def plotAbundance(self, log=True, inc=0.):
         return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getAbundance(log=log, inc=inc)
 
-    def plotKineticTemp(self, inc=0.):
-        return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getKineticTemp(inc=inc)
+    def plotKineticTemp(self, log=False, inc=0.):
+        return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getKineticTemp(log=log, inc=inc)
 
     def plotRelAbundance(self, inc=0.):
         return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getRelAbundance(inc=inc)
