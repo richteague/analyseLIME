@@ -3,6 +3,10 @@ import readLAMDA as rates
 import scipy.constants as sc
 from scipy.interpolate import griddata
 
+import numpy as np
+import scipy.constants as sc
+from scipy.interpolate import griddata
+
 class population:
 
     ## Initialisation ##
@@ -124,9 +128,6 @@ class population:
 
     ## Gridding Functions ##
 
-    # TODO: If the bins are empty, prune them.
-    # gridcolumn - grid the given column with the given inclination.
-
     def calcGridColumn(self, col, inc=0.):
         return griddata((self.r_proj(inc), self.z_proj(inc)), self.data[int(col)],
                        (self.rgrid_proj(inc)[None,:], self.zgrid_proj(inc)[:,None]),
@@ -197,9 +198,8 @@ class population:
         arr = np.where(zarr < minz[None,:]*np.ones(self.npts)[:,None], mask, arr)
         return arr
 
-    ## Rotation Functions ##
 
-    # Functions to help with rotated models. inc is always in radians.
+    ## Rotation Functions ##
 
     def r_proj(self, inc):
         return self.r * np.cos(inc) - self.z * np.sin(inc)
@@ -236,7 +236,8 @@ class population:
             self.densities = np.array([self.getGridColumn(3, inc=inc)])
             self.density_i = [inc]
         elif inc not in self.density_i:
-            self.densities = np.vstack([self.densities, [self.getGridColumn(3, inc=inc)]])
+            self.densities = np.vstack([self.densities,
+                                        [self.getGridColumn(3, inc=inc)]])
             self.density_i.append(inc)
         if log:
             return np.log10(self.densities[self.density_i.index(inc)])
@@ -248,7 +249,8 @@ class population:
             self.kinetictemp = np.array([self.getGridColumn(4, inc=inc)])
             self.kineticte_i = [inc]
         elif inc not in self.kineticte_i:
-            self.kinetictemp = np.vstack([self.kinetictemp, [self.getGridColumn(4, inc=inc)]])
+            self.kinetictemp = np.vstack([self.kinetictemp,
+                                          [self.getGridColumn(4, inc=inc)]])
             self.kineticte_i.append(inc)
         if log:
             return np.log10(self.kinetictemp[self.kineticte_i.index(inc)])
@@ -260,7 +262,8 @@ class population:
             self.relabund = np.array([self.getGridColumn(5, inc=inc)])
             self.relabu_i = [inc]
         elif inc not in self.relabu_i:
-            self.relabund = np.vstack([self.relabund, [self.getGridColumn(5, inc=inc)]])
+            self.relabund = np.vstack([self.relabund,
+                                       [self.getGridColumn(5, inc=inc)]])
             self.relabu_i.append(inc)
         if log:
             return np.log10(self.relabund[self.relabu_i.index(inc)])
@@ -281,7 +284,8 @@ class population:
     def getSurfaceDensity(self, unit='ccm', trim=False):
         toint = self.getDensity(inc=0.)
         toint = np.where(np.isnan(toint), 0., toint)
-        sigma = np.array([np.trapz(col, x=self.zgrid*sc.au*100.) for col in toint.T])
+        sigma = np.array([np.trapz(col, x=self.zgrid*sc.au*100.)
+                          for col in toint.T])
         if unit == 'gccm':
             sigma *= sc.m_p * 2. * 1e3 * 0.85
         elif unit == 'kgccm':
@@ -294,7 +298,8 @@ class population:
     def getColumnDensity(self, unit='ccm', trim=False):
         toint = self.getAbundance(inc=0)
         toint = np.where(np.isnan(toint), 0., toint)
-        sigma = np.array([np.trapz(col, x=self.zgrid*sc.au*100.) for col in toint.T])
+        sigma = np.array([np.trapz(col, x=self.zgrid*sc.au*100.)
+                          for col in toint.T])
         if unit == 'gccm':
             sigma *= sc.m_p * self.LAMDA.mu * 1e3
         elif unit == 'kgccm':
@@ -305,7 +310,8 @@ class population:
             return np.array([self.rgrid, 2.*sigma])
 
     def getAbundanceWeightedProfile(self, c, sampling=1):
-        return self.weightedprofile(self.getGridColumn(int(c)), self.getAbundance(), sampling=sampling)
+        return self.weightedprofile(self.getGridColumn(int(c)),
+                                    self.getAbundance(), sampling=sampling)
 
 
 
@@ -350,7 +356,8 @@ class population:
                                       self.excitationte_j == np.array(J)))
         idx = np.squeeze(idx)
         if idx.size == 0:
-            self.excitationtemp = np.vstack([self.excitationtemp, [calcExcitationTemp(J, inc=inc)]])
+            self.excitationtemp = np.vstack([self.excitationtemp,
+                                             [calcExcitationTemp(J, inc=inc)]])
             self.excitationte_i.append(inc)
             self.excitationte_j.append(J)
             idx = np.where(np.logical_and(self.excitationte_i == np.array(inc),
@@ -387,7 +394,8 @@ class population:
                                       self.absorpcoe_j == np.array(J)))
         idx = np.squeeze(idx)
         if idx.size == 0:
-            self.absorpcoeff = np.vstack([self.absorpcoeff, [self.calcAbsorptionCoeff(J, inc=inc)]])
+            self.absorpcoeff = np.vstack([self.absorpcoeff,
+                                          [self.calcAbsorptionCoeff(J, inc=inc)]]) 
             self.absorpcoe_i.append(inc)
             self.absorpcoe_j.append(J)
         idx = np.where(np.logical_and(self.absorpcoe_i == np.array(inc),
@@ -480,13 +488,10 @@ class population:
                 I[j,i] = a + (1. - np.exp(-1. * t[j,i])) * S[j,i]
         return I
 
-    def getSourceWeightedProfile(self, c, J):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getAbundance()*self.getSourceFunction(J))
+    def getFluxWeighedProfile(self, c, J, sampling=1, inc=0.):
+        return self.weightedprofile(self.getGridColumn(int(c)), self.getFluxWeights(J), sampling=sampling, inc=inc)
 
 
-    # Find the radial flux weighted profile.
-    def getFluxWeightedProfile(self, c, J, dV=None, mach=0., taulim=1.0):
-        return self.weightedprofile(self.gridcolumn(int(c)), self.getFluxWeights(J, dV=dV, mach=mach, taulim=taulim))
 
     ## Miscellaneous Functions ##
 
@@ -508,7 +513,7 @@ class population:
         edg = np.append(edg, 2.*centers[-1]-edg[-1])
         return edg
 
-    def weightedprofile(self, params, weight, sampling=1):
+    def weightedprofile(self, params, weight, sampling=1, inc=0.):
         params = np.where(np.isfinite(params), params, 0.)
         weight = np.where(np.isfinite(weight), weight, 0.)
         idx = np.array([r for r in range(weight.shape[1])
@@ -517,9 +522,9 @@ class population:
                         for r in idx])
         std = np.array([np.average((params[:,rr]-avg[r])**2. / params[:,rr].size, weights=weight[:,rr])
                         for r, rr in enumerate(idx)])**0.5
-        rax = self.rgrid[idx]
+        rax = self.rgrid_proj(inc=inc)[idx]
         if sampling > 1:
-            rax = self.runningmean(self.rgrid[idx], sampling)
+            rax = self.runningmean(rax, sampling)
             avg = self.runningmean(avg, sampling)
             std = self.runningmean(std, sampling)
         return np.array([rax, avg, std])
@@ -547,3 +552,6 @@ class population:
 
     def plotLevelAbundance(self, J, log=False, inc=0.):
         return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getLevelAbundance(J, log=log, inc=inc)
+
+    def plotFluxWeights(self, J, inc=0.):
+        return self.rgrid_proj(inc), self.zgrid_proj(inc), self.getFluxWeights(J, inc=inc)
