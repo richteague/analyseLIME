@@ -79,14 +79,13 @@ class population:
         return
     
     
-    ## Gridding Functions ##
+    ## Functions ##
     
     # Calculate the grids.
     def getgrids(self, npts):
         xgrid = np.linspace(0, np.hypot(self.data[0], self.data[1]).max(), npts)
         ygrid = np.linspace(-abs(self.data[2]).max(), abs(self.data[2]).max(), npts) 
         return xgrid, ygrid
-    
     
     # Switch between bin edges and centers for binning.
     def swapedgescenters(self, centers=None, edges=None):
@@ -101,7 +100,6 @@ class population:
             for i in range(1, edges.size-1):
                 cnt[i] = edges[i+1]-cnt[i-1]
             return cnt
-
     
     # Two dimensional gridding.
     def gridcolumn(self, col):
@@ -115,7 +113,6 @@ class population:
                                      (self.xgrid[None,:], self.ygrid[:,None]),
                                      method='cubic', fill_value=np.nan)
         return np.where(np.isnan(self.template), np.nan, arr)
-
     
     # Calculate the surface density.
     def getSurfaceDensity(self, unit='ccm', trim=False):
@@ -132,7 +129,6 @@ class population:
         else:
             return np.array([self.xgrid, 2.*sigma])
     
-    
     # Calculate the molecular column density.
     def getColumnDensity(self, unit='ccm', trim=False):
         toint = self.getAbundance()
@@ -147,7 +143,6 @@ class population:
             return np.array([self.xgrid[sigma > 0], 2.*sigma[sigma > 0]])
         else:
             return np.array([self.xgrid, 2.*sigma])
-
     
     # Return the collider density structure.
     def getDensity(self):
@@ -156,14 +151,12 @@ class population:
             self.density = self.gridcolumn(3)
         return self.density
     
-    
     # Return the kinetic temperature structure.
     def getKineticTemp(self):
         if not hasattr(self, 'tkin'):
             print 'Gridding %s kinetic temperature.' % self.LAMDA.molecule
             self.tkin = self.gridcolumn(4)
         return self.tkin
-    
     
     # Return the molecular realtive abundance structure.
     def getRelAbundance(self):
@@ -172,20 +165,17 @@ class population:
             self.relabund = self.gridcolumn(5)
         return self.relabund
     
-    
     # Get the outline of the gridding for pretty plotting.
     def getOutline(self):
         if not hasattr(self, 'outline'):
             self.outline = np.where(np.isfinite(self.getDensity()), 1, 0)
         return self.outline
     
-    
     # Return the molecular abundance structure.
     def getAbundance(self):
         if not hasattr(self, 'abund'):
             self.abund = self.getRelAbundance() * self.getDensity()
         return self.abund
-    
     
     # Return the level abundance of the Jth level.
     def getLevelAbundance(self, J):
@@ -195,8 +185,6 @@ class population:
             self.levelabundance[J] = self.gridcolumn(int(7+J)) 
             self.levelabundance[J] *= self.getRelAbundance() * self.getDensity()
         return self.levelabundance[J]
-
-    
     
     # Get the excitation temperature of a given level.
     def getExcitationTemp(self, J):
@@ -205,7 +193,6 @@ class population:
             Tex /= np.log(self.getLevelRatios(J))
             self.excitationtemp[J] = Tex
         return self.excitationtemp[J]
-    
     
     # Get the ratio of level populations, including weights.
     # Returns: n_l * g_u / n_u / g_l
@@ -228,24 +215,20 @@ class population:
                         for r, rr in enumerate(idx)])**0.5
         return np.array([self.xgrid[idx], avg, std])
     
-    
     # Return the level populated radial profile.
     def getLevelWeightedProfile(self, c, J):
         return self.weightedprofile(self.gridcolumn(int(c)), 
                                     self.getLevelAbundance(J))
-    
     
     # Find the radial, abundance weighted profile for a given parameter in column c.
     def getAbundanceWeightedProfile(self, c):
         return self.weightedprofile(self.gridcolumn(int(c)), 
                                     self.getAbundance())
     
-    
     # Find the radial flux weighted profile.
     def getFluxWeightedProfile(self, c, J):
         return self.weightedprofile(self.gridcolumn(int(c)), 
-                                    self.getFluxWeights(J))
-    
+                                    self.getFluxWeights(J))    
 
     # Get the line width.
     def getPhi(self, J):
