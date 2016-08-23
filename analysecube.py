@@ -13,8 +13,8 @@ class cube:
         
         # Data and axes.
         
-        self.path = path
-        self.filename = self.path.split('/')[-1]
+        self.filename = path
+        #self.filename = self.path.split('/')[-1]
         self.data = fits.getdata(self.filename, 0)
         self.velax = self.getVelocityAxis()
         self.posax = self.getPositionAxis()
@@ -158,6 +158,30 @@ class cube:
         else:
             return first 
     
+    
+    # Get the second moment map.
+    def getSecond(self, lowchan=0, highchan=-1, removeCont=1,
+                  vunit='km/s', mask=True):
+        
+        data = self.clipData(lowchan=lowchan, highchan=highchan,
+                             removeCont=removeCont)
+        velo = self.clipVelo(lowchan=lowchan, highchan=highchan,
+                             vunit=vunit)
+
+        first = self.getFirst(lowchan=lowchan, highchan=highchan,
+                              method=1, vunit=vunit, mask=False)
+        vcube = velo[:,None,None] * np.ones(data.shape)
+        fcube = first[None,:,:] * np.ones(data.shape)
+        data = np.where(data == 0.0, 1e-30*np.random.random(data.shape), data)
+        second = np.average((vcube - fcube)**2, weights=data, axis=0)**0.5
+            
+        if mask:
+            return second * self.getNaNMask()
+        else:
+            return second
+    
+    
+    
     # Get the mask. Can be used for outlines.
     def getMask(self):
         if not hasattr(self, 'mask'):
@@ -165,15 +189,22 @@ class cube:
             self.mask = np.where(mask == mask.min(), 0, 1)
         return self.mask
     
+    def getNaNMask(self):
+        if not hasattr(self, 'nanmask'):
+            mask = np.sum(self.data, axis=0)
+            self.nanmask = np.where(mask == mask.min(), np.nan, 1)
+        return self.nanmask    
     
     # Get the radial profile of the zeroth moment.
     def getZerothProfile(self, bins=None, nbins=50, lowchan=0, 
                          highchan=-1, removeCont=1, bunit=None, 
                          vunit='km/s', mask=True):
         if bins is None:
-            bins = np.linspace(0, self.rvals.max(), nbins+1)
-        ridxs = np.digitize(self.rvals, bins).ravel()
-        
+            bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
+        else:
+            nbins = len(bins)-1
+            
+        ridxs = np.digitize(self.rvals, bins).ravel()  
         zeroth = self.getZeroth(lowchan=lowchan, highchan=highchan, 
                                 removeCont=removeCont, bunit=bunit, 
                                 vunit=vunit, mask=mask).ravel()
@@ -184,6 +215,29 @@ class cube:
                         for r in range(1, nbins+1)])
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
+    
+    
+    # Get the Radial profile of the second moment.
+    def getSecondProfile(self, bins=None, nbins=50, lowchan=0, 
+                         highchan=-1, removeCont=1, vunit='km/s', 
+                         mask=True):
+        if bins is None:
+            bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
+        else:
+            nbins = len(bins)-1
+            
+        ridxs = np.digitize(self.rvals, bins).ravel()  
+        second = self.getSecond(lowchan=lowchan, highchan=highchan, 
+                                removeCont=removeCont, vunit=vunit,
+                                mask=mask).ravel()
+        
+        avg = np.array([np.nanmean(second[ridxs == r]) 
+                        for r in range(1, nbins+1)])
+        std = np.array([np.nanstd(second[ridxs == r]) 
+                        for r in range(1, nbins+1)])
+        rad = np.average([bins[1:], bins[:-1]], axis=0)
+        return np.array([rad, avg, std])       
+
     
     
     # Convert brightness units.
@@ -210,6 +264,11 @@ class cube:
         jy2k /= 2. * fits.getval(self.filename, 'restfreq', 0)**2.
         jy2k /= sc.k * np.radians(fits.getval(self.filename, 'cdelt2', 0))**2.
         return jy2k
-        
+    
+    # Plot the outline of the disk.
+    def plotOutline(self, ax, lw=.5, c='k', ls='-'):
+        ax.contour(self.posax, self.posax, self.getMask(), [0.99], 
+                   linewidths=[lw], colors=[c], linestyles=[ls])
+        return
 
         
