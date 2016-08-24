@@ -16,6 +16,8 @@ class cube:
         self.filename = path
         #self.filename = self.path.split('/')[-1]
         self.data = fits.getdata(self.filename, 0)
+        self.linedata = np.array([self.data[i] - self.data[0]
+                                  for i in range(self.data.shape[0])])
         self.velax = self.getVelocityAxis()
         self.posax = self.getPositionAxis()
         self.specax = self.getSpectralAxis()
@@ -98,7 +100,7 @@ class cube:
                              for i in range(lowchan,self.nchan+1)[:highchan]])
         else:
             data = data[lowchan:highchan]
-        return data
+        return np.where(data >= 0., data, 0.)
     
     # Clip the velocity axis and convert units if necessary.
     def clipVelo(self, lowchan, highchan, vunit='km/s'):
@@ -126,7 +128,7 @@ class cube:
         zeroth = np.trapz(data, dx=abs(np.diff(velo)[0]), axis=0)
 
         if mask:
-            return zeroth * self.getMask()
+            return zeroth * self.getNaNMask()
         else:
             return zeroth
 
@@ -266,8 +268,8 @@ class cube:
         return jy2k
     
     # Plot the outline of the disk.
-    def plotOutline(self, ax, lw=.5, c='k', ls='-'):
-        ax.contour(self.posax, self.posax, self.getMask(), [0.99], 
+    def plotOutline(self, ax, level=0.99, lw=.5, c='k', ls='-'):
+        ax.contour(self.posax, self.posax, self.getMask(), [level], 
                    linewidths=[lw], colors=[c], linestyles=[ls])
         return
 
