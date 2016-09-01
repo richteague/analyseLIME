@@ -261,10 +261,13 @@ class cube:
         return
 
     def getIntegratedIntensity(self, removeCont=1, lowchan=0,
-                               highchan=-1, vunit='km/s'):
+                               highchan=-1, bunit='jy', vunit='km/s'):
         data = self.clipData(lowchan=lowchan, highchan=highchan,
                              removeCont=removeCont)
-        data *= self.convertBunit('jy/pix')
+        if bunit.lower() == 'k':
+            data *= self.convertBunit('K')
+        else:
+            data *= self.convertBunit(bunit.split('/')[0]+'/pix')
         velo = self.clipVelo(lowchan=lowchan, highchan=highchan,
                              vunit=vunit)
         return velo, np.array([np.sum(c) for c in data])
