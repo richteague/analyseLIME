@@ -1,17 +1,46 @@
+import os
 import numpy as np
 from astropy.io import fits
 import scipy.constants as sc
 from astropy.io.fits import getval
 from astropy.convolution import convolve
-from astropy.modeling.models import Gaussian2D
+from matplotlib.patches import Ellipse
 
-class cube:
+class beamclass:
+    """Beam object to pass to convolution functions."""
+    
+    def __init__(self, beamparams):
 
+        if type(beamparams) is float:
+            self.maj = beamparams
+            self.min = beamparams
+            self.pa = 0.0
+        elif len(beamparams) == 1:
+            self.min = beamparams[0]
+            self.maj = self.min
+            self.pa = 0.0
+        elif len(beamparams) == 3:
+            self.min, self.maj, self.pa = beamparams
+        else:
+            raise ValueError("beamparams = [b_min, b_maj, b_pa]")
+
+        if self.min > self.maj:
+            tmp = self.min
+            self.min = self.maj
+            self.maj = tmp
+            
+        self.pa = np.radians(self.pa % 360.)
+        self.area = np.pi * self.min * self.maj / 4. / np.log(2)
+        
+        return
+
+
+class cubeclass:
+    """Datacube read in from LIME."""
+    
     def __init__(self, path, dist=None, inc=None, pa=None, 
                  quick_convolve=True):
-        """Upon initialisation read in the data and calculate the cube axes.
-        Will try and read the distance, inclination and position angle of the
-        source from the header file."""
+        """Read in the data and calculate the cube axes."""
         self.filename = path
         self.data = fits.getdata(self.filename, 0)
         self.velax = self.getVelocityAxis()
@@ -65,87 +94,45 @@ class cube:
         print 'Successfully read in %s.' % self.filename       
         return
     
-    def pixtobeam(self, beam_maj, beam_min=None):
+    def pixtobeam(self, beam):
         """Jy/beam = Jy/pix * pixtobeam()"""
-        pixarea = np.diff(self.posax)[0]**2
-        if beam_min is None:
-            beam_min = beam_maj
-        beamarea = np.pi * beam_maj * beam_min / 4. / np.log(2)
-        return beamarea / pixarea
+        return beam.area / np.diff(self.posax)[0]**2
 
-    def beamKernel(self, beam_x, beam_y, beam_pa):
+    def beamKernel(self, beam):
         """Generate a beam kernel for the convolution."""
-         
-        sig_x = beam_x / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
-        if beam_y is None:
-            sig_y = sig_x
-        else:
-
-            sig_y = beam_y / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
-        theta = np.radians(beam_pa % 360.)
+        sig_x = beam.maj / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
+        sig_y = beam.min / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
         grid = np.arange(-np.round(sig_x) * 8, np.round(sig_x) * 8 + 1)
-        
-        # Calculate and return the kernel. 
-        # https://en.wikipedia.org/wiki/Gaussian_function
-        a = np.cos(theta)**2 / 2. / sig_x**2
-        a += np.sin(theta)**2 / 2. / sig_y**2
-        b = np.sin(2. * theta) / 4. / sig_y**2
-        b -= np.sin(2. * theta) / 4. / sig_x**2
-        c = np.sin(theta)**2 / 2. / sig_x**2
-        c += np.cos(theta)**2 / 2. / sig_y**2
+        a = np.cos(beam.pa)**2 / 2. / sig_x**2
+        a += np.sin(beam.pa)**2 / 2. / sig_y**2
+        b = np.sin(2. * beam.pa) / 4. / sig_y**2
+        b -= np.sin(2. * beam.pa) / 4. / sig_x**2
+        c = np.sin(beam.pa)**2 / 2. / sig_x**2
+        c += np.cos(beam.pa)**2 / 2. / sig_y**2
         kernel = c * grid[:, None]**2 + a * grid[None, :]**2
         kernel += 2 * b * grid[:, None] * grid[None, :]
         return np.exp(-kernel) / 2. / np.pi / sig_x / sig_y
 
-    def convolveZeroth(self, zeroth, beam_maj, beam_min=None, beam_pa=0.0):
-        """Convolve the zeroth moment, quicker than whole cube."""
+
+    def convolveChannel(self, channel, beam):
+        """Returns the convolved channel or moment map with the beam."""
+        return convolve(channel, self.beamKernel(beam))
         
-        if beam_min is None:
-            beam_min = beam_maj
-        elif beam_min > beam_maj:
-            beam_tmp = beam_min
-            beam_min = beam_maj
-            beam_maj = beam_tmp
-            
-        try:
-            return self.convolved_zeroths[beam_maj, beam_min, beam_pa]
-        except:
-            print 'Convolving the zeroth moment.'
-            
-        beam_kernel = self.beamKernel(beam_maj, beam_min, beam_pa)
-        conv_zeroth = convolve(zeroth, beam_kernel)
         self.convolved_zeroths[beam_maj, beam_min, beam_pa] = conv_zeroth
         return self.convolved_zeroths[beam_maj, beam_min, beam_pa]
 
 
-    def convolveCube(self, beam_maj, beam_min=None, beam_pa=0.0):
-        """Use the astropy.convolve package to convolve the cube with a beam.
-        """
-        
-        # Check if the major and minor axes are defined correctly.
-        # TODO: Check the convention of minor and major.
-        if beam_min is None:
-            beam_min = beam_maj
-        elif beam_min > beam_maj:
-            beam_tmp = beam_min
-            beam_min = beam_maj
-            beam_maj = beam_tmp
-        
-        # If the cube has not been convolved with that beam before, run the
-        # convolution. Takes a long time...
+    def convolveCube(self, beam):
+        """Convolve the datacube with a beam."""
         try:
             return self.convolved_cubes[beam_maj, beam_min, beam_pa]
         except:
-            print 'Convolving new cube.'
-            print 'Will take a while. Be patient.'
-         
-        # Add the convolved cube to the dictionary for easy access later.
-        beam_kernel = self.beamKernel(beam_maj, beam_min, beam_pa)
-        cube = np.array([convolve(chan, beam_kernel) for chan in self.data])
-        self.convolved_cubes[beam_maj, beam_min, beam_pa] = cube
+            print 'Convolving cube. May take a while.'
+        cube = [self.convolveChannel(chan, beam) for chan in self.data]
+        self.convolved_cubes[beam_maj, beam_min, beam_pa] = np.array(cube)
         return self.convolved_cubes[beam_maj, beam_min, beam_pa]
         
-    
+
     def getPositionAxis(self):
         """Returns the position axis in arcseconds."""
         a_len = getval(self.filename, 'naxis2', 0)
@@ -172,17 +159,18 @@ class cube:
         """Clip the datacube to specific channels and remove continuum. If a
         list of beam parameters are specified, use the convolved cube instead.
         Continuum subtraction just models the first channel as continuum."""
+        
         if beam is None or self.quick_convolve:
             data = self.data.copy()
         else:
-            if type(beam) is float:
-                beam = [beam, None, 0.0]
-            data = self.convolveCube(beam[0], beam[1], beam[2])
+            data = self.convolveCube(beam)
+            
         if removeCont:
             rgn = range(low, self.nchan+1)[:high]
             data = np.array([data[i]-data[0] for i in rgn])
         else:
             data = data[low:high]
+            
         return np.where(data >= 0., data, 0.)
 
 
@@ -196,28 +184,32 @@ class cube:
         return np.array(velo)
 
     
-    def getZeroth(self, low=0, high=-1, removeCont=1,
-                  bunit=None, vunit='km/s', mask=True, beam=None):
-        """Returns the zeroth moment map, integrated between lowchan and
-        highchan. If removeCont is set, we remove the continuum, while bunit
-        and vunit specify the units. Providing beam parameters will used a
-        cube convolved with those parameters. If quick_convolve is set to True, 
-        will just convolve the zeroth moment, rather than each channel."""
-        
+    def getZeroth(self, low=0, high=-1, removeCont=1, bunit=None, 
+                  vunit='km/s', mask=True, beamparams=None):
+        """Returns the zeroth moment map. Convolve if necessary."""
+        if beamparams is not None:
+            beam = beamclass(beamparams)
+        else:
+            beam = None
+            
+        # Calculate the zeroth moment. If not quick_convolve, convolve the
+        # entire datacube. 
         velo = self.clipVelo(low=low, high=high, vunit=vunit)
-        data = self.clipData(low=low, high=high, removeCont=removeCont,
-                             beam=beam)
+        data = self.clipData(low=low, high=high, removeCont=removeCont, beam=beam)
         data *= self.convertBunit(bunit, beam=beam)
-        
         zeroth = np.trapz(data, dx=abs(np.diff(velo)[0]), axis=0)
-        if (not beam is None and self.quick_convolve):
-            if type(beam) is float:
-                beam = [beam, None, 0.0]
-            elif len(beam) != 3:
-                raise ValueError('beam = [b_maj, b_min, b_pa].')
-            zeroth = self.convolveZeroth(zeroth, beam[0], beam[1], beam[2])
+        
+        # If quick_convolve, only convolve the zeroth moment. 
+        if (beam is not None and self.quick_convolve):
+            try:
+                zeroth = self.convolved_zeroths[beam.maj, beam.min, beam.pa]
+            except:
+                zeroth = self.convolveChannel(zeroth, beam)
+                self.convolved_zeroths[beam.maj, beam.min, beam.pa] = zeroth
+                
+        # Masked zeroth moment.
         if mask:
-            return zeroth * self.getNaNMask()
+            return zeroth * self.getMask()
         else:
             return zeroth
 
@@ -274,29 +266,30 @@ class cube:
         return self.mask
 
     def getNaNMask(self):
+        raise NotImplementedError("Change!")
         if not hasattr(self, 'nanmask'):
             mask = np.sum(self.data, axis=0)
             self.nanmask = np.where(mask == mask.min(), np.nan, 1)
         return self.nanmask
 
-    # Get the radial profile of the zeroth moment.
     def getZerothProfile(self, bins=None, nbins=50, lowchan=0,
                          highchan=-1, removeCont=1, bunit=None,
-                         vunit='km/s', mask=True, beam=None):
+                         vunit='km/s', mask=True, beamparams=None):
+        """Get the radial profile of the zeroth moment."""                        
         if bins is None:
             bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
         else:
             nbins = len(bins)-1
-
         ridxs = np.digitize(self.rvals, bins).ravel()
-        zeroth = self.getZeroth(low=lowchan, high=highchan,
-                                removeCont=removeCont, bunit=bunit,
-                                vunit=vunit, mask=mask, beam=beam).ravel()
-
-        avg = np.array([np.nanmean(zeroth[ridxs == r])
-                        for r in range(1, nbins+1)])
-        std = np.array([np.nanstd(zeroth[ridxs == r])
-                        for r in range(1, nbins+1)])
+        zeroth = self.getZeroth(low=lowchan, 
+                                high=highchan, 
+                                removeCont=removeCont, 
+                                bunit=bunit, 
+                                vunit=vunit, 
+                                mask=mask, 
+                                beamparams=beamparams).ravel()
+        avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
@@ -361,3 +354,20 @@ class cube:
         velo = self.clipVelo(lowchan=lowchan, highchan=highchan,
                              vunit=vunit)
         return velo, np.array([np.sum(c) for c in data])
+        
+        
+    def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k'):
+        """Plot the beam on the supplied axes."""
+        beam = beamclass(beamparams)
+        x_pos = x * (ax.get_xlim()[1] - ax.get_xlim()[0]) + ax.get_xlim()[0]
+        y_pos = y * (ax.get_ylim()[1] - ax.get_ylim()[0]) + ax.get_ylim()[0]
+        ax.add_patch(Ellipse((x_pos, y_pos), 
+                             width = beam.min,
+                             height = beam.maj,
+                             angle = np.degrees(beam.pa),
+                             fill = False, 
+                             hatch = '////', 
+                             lw = 1.25, 
+                             color = color,
+                             transform = ax.transData))
+        return
