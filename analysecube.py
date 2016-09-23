@@ -89,6 +89,8 @@ class cubeclass:
         self.bunit = self.bunit.replace('/', '')
         self.bunit = self.bunit.replace('per', '')
         self.bunit = self.replace(' ', '')
+        if self.bunit not in ['jypixel', 'mjypixel', 'k']:
+            raise ValueError('Cannot read brightness unit.')
         
         self.x = self.posax[None, :]
         self.y = self.posax[:, None] / np.cos(self.inc)
@@ -320,12 +322,18 @@ class cubeclass:
 
     def convertBunit(self, bunit, beam=None):
         """Convert the brightness units from self.bunit to bunit."""
-        
-        # Parse the requested value.
+        if bunit is None:
+            return 1.
         bunit = bunit.lower().replace('/', '')
         bunit = bunit.replace('per', '').replace(' ', '')
         if bunit not in ['jybeam', 'mjybeam', 'jypixel', 'mjypixel', 'k']:
             raise ValueError("bunit must be (m)Jy/pixel, (m)Jy/beam or K.")
+            
+        rescale = self.rescaling[bunit]
+        if 'beam' in bunit:
+            rescale *= self.pixtobeam(beam)    
+        return 
+        
         
         # Apply the appropriate scaling.
         if (self.bunit == bunit or bunit is None):
