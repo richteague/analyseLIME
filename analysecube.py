@@ -83,15 +83,19 @@ class cubeclass:
         self.y0 = getval(self.filename, 'crpix2', 0) - 1.
         self.nchan = self.velax.size
         self.npix = self.posax.size
+        
+        # Parse the brightness unit.
         self.bunit = fits.getval(self.filename, 'bunit', 0).lower()
-
+        self.bunit = self.bunit.replace('/', '')
+        self.bunit = self.bunit.replace('per', '')
+        self.bunit = self.replace(' ', '')
+        
         self.x = self.posax[None, :]
         self.y = self.posax[:, None] / np.cos(self.inc)
         self.pixscale = np.diff(self.posax)[0]
         self.rvals = np.hypot(self.x, self.y)
         self.convolved_cubes = {}
-        self.convolved_zeroths = {}
-        print 'Successfully read in %s.' % self.filename       
+        self.convolved_zeroths = {}  
         return
     
     def pixtobeam(self, beam):
@@ -317,14 +321,30 @@ class cubeclass:
     def convertBunit(self, bunit, beam=None):
         """Convert the brightness units from self.bunit to bunit."""
         
+        # Parse the requested value.
+        bunit = bunit.lower().replace('/', '')
+        bunit = bunit.replace('per', '').replace(' ', '')
+        if bunit not in ['jybeam', 'mjybeam', 'jypixel', 'mjypixel', 'k']:
+            raise ValueError("bunit must be (m)Jy/pixel, (m)Jy/beam or K.")
+        
+        # Apply the appropriate scaling.
         if (self.bunit == bunit or bunit is None):
+            print 'No change: %s is %s.' % (self.bunit, bunit)
             scale = 1.
         elif ('mjy' in bunit.lower() and not 'beam' in bunit.lower()):
+            print 'From %s to mJy/pix (asked for %s).' % (self.bunit, bunit)
             scale = 1e3 / self.JanskytoKelvin()
+        elif ('mjy' in bunit.lower() and 'beam' in bunit.lower()):
+            print 'From %s to mJy/beam (asked for %s).' % (self.bunit, bunit)
+            scale = 1e3 / self.JanskytoKelvin() * self.pixtobeam(beam)
         elif ('jy' in bunit.lower() and not 'beam' in bunit.lower()):
-        
+            print 'From %s to Jy/pix (asked for %s).' % (self.bunit, bunit)
             scale = self.JanskytoKelvin()**-1
+        elif ('jy' in bunit.lower() and 'beam' in bunit.lower()):
+            scale = self.pixtobeam(beam) / self.JanskytoKelvin()
+            print 'From %s to Jy/beam (asked for %s).' % (self.bunit, bunit)
         elif 'k' in bunit.lower():
+            print 'From %s to K (asked for %s).' % (self.bunit, bunit)
             scale = self.JanskytoKelvin()
         else:
             raise NotImplementedError("Unknown brightness unit.")
