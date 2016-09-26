@@ -222,7 +222,7 @@ class cubeclass:
             bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
         else:
             nbins = len(bins)-1
-        ridxs = np.digitize(self.rvals, bins).ravel()
+        ridxs = np.digitize(self.rvals.ravel(), bins)
         # Return the zeroth moment with requested parameters.
         zeroth = self.getZeroth(low=low, high=high, removeCont=removeCont,
                                 bunit=bunit, vunit=vunit, mask=mask,
@@ -317,13 +317,11 @@ class cubeclass:
 
     def brightnessconversions(self):
         """Calculate the conversion brightness unit factors."""
-
         # Brightnes unit of file.
         bunit = fits.getval(self.filename, 'bunit', 0).lower()
         bunit = bunit.replace('/', '').replace('per', '').replace(' ', '')
         if bunit not in ['jypixel', 'k']:
             raise ValueError('Cannot read brightness unit.')
-
         # Conversion dictionary.
         tounit = {}
         if bunit == 'jypixel':
@@ -334,7 +332,6 @@ class cubeclass:
             tounit['k'] = 1.
             tounit['jypixel'] = 1. / self.JanskytoKelvin()
             tounit['mjypixel'] = 1e-3 / self.JanskytoKelvin()
-
         return bunit, tounit
 
     def convertBunit(self, bunit, beam=None):
@@ -373,21 +370,26 @@ class cubeclass:
         return jy2k
 
 
-    def getIntegratedIntensity(self, removeCont=1, lowchan=0,
-                               highchan=-1, bunit='jy', vunit='km/s'):
-        data = self.clipData(lowchan=lowchan, highchan=highchan,
-                             removeCont=removeCont)
+    def getIntegratedIntensity(self, removeCont=1, low=0, high=-1, bunit='Jy', vunit='km/s'):
+        """Return the integrated intensity."""
+        data = self.clipData(low=low, high=high, removeCont=removeCont)
+        velo = self.clipVelo(low=low, high=high, vunit=vunit)
         if bunit.lower() == 'k':
-            data *= self.convertBunit('K')
+            bunit = 'k'
+        elif 'mjy' in bunit.lower():
+            bunit = 'mjyperpixel'
+        elif 'jy' in bunit.lower():
+            bunit = 'jyperpixel'
         else:
-            data *= self.convertBunit(bunit.split('/')[0]+'/pix')
-        velo = self.clipVelo(lowchan=lowchan, highchan=highchan,
-                             vunit=vunit)
+            raise ValueError('bunit must be either mJy, Jy or K.')
+        data *= self.convertBunit(bunit)
         return velo, np.array([np.sum(c) for c in data])
 
 
     def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k'):
         """Plot the beam on the supplied axes."""
+        if beamparams is None:
+            return
         beam = beamclass(beamparams)
         x_pos = x * (ax.get_xlim()[1] - ax.get_xlim()[0]) + ax.get_xlim()[0]
         y_pos = y * (ax.get_ylim()[1] - ax.get_ylim()[0]) + ax.get_ylim()[0]
