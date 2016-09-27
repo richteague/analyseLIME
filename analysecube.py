@@ -5,6 +5,7 @@ import scipy.constants as sc
 from astropy.io.fits import getval
 from astropy.convolution import convolve
 from matplotlib.patches import Ellipse
+from scipy.ndimage.interpolation import rotate
 
 class beamclass:
     """Beam object to pass to convolution functions."""
@@ -87,11 +88,11 @@ class cubeclass:
         # Parse the brightness unit.
         # Should make it easier to calculate converions.
         self.bunit, self.tounit = self.brightnessconversions()
-
         self.x = self.posax[None, :]
         self.y = self.posax[:, None] / np.cos(self.inc)
         self.pixscale = np.diff(self.posax)[0]
         self.rvals = np.hypot(self.x, self.y)
+        self.tvals = np.arctan2(self.y, self.x)
         self.convolved_cubes = {}
         self.convolved_zeroths = {}
         return
@@ -159,22 +160,17 @@ class cubeclass:
         return self.getVelocityAxis() * nu / sc.c
 
 
-    def clipData(self, low=0, high=-1, removeCont=1, beam=None):
-        """Clip the datacube to specific channels and remove continuum. If a
-        list of beam parameters are specified, use the convolved cube instead.
-        Continuum subtraction just models the first channel as continuum."""
-
+    def clipData(self, low=0, high=-1, removeCont=True, beam=None):
+        """Clip the datacube to specific channels and remove continuum."""
         if beam is None or self.quick_convolve:
             data = self.data.copy()
         else:
             data = self.convolveCube(beam)
-
         if removeCont:
-            rgn = range(low, self.nchan+1)[:high]
-            data = np.array([data[i]-data[0] for i in rgn])
-        else:
-            data = data[low:high]
-
+            data = np.array([chan - data[0] for chan in data])
+        if high == -1:
+            high = data.shape[0] + 1
+        data = data[low:high]
         return np.where(data >= 0., data, 0.)
 
 
@@ -188,7 +184,7 @@ class cubeclass:
         return np.array(velo)
 
 
-    def getZeroth(self, low=0, high=-1, removeCont=1, bunit=None,
+    def getZeroth(self, low=0, high=-1, removeCont=True, bunit=None,
                   vunit='km/s', mask=True, beamparams=None):
         """Returns the zeroth moment map. Convolve if necessary."""
         if beamparams is not None:
@@ -214,7 +210,7 @@ class cubeclass:
             return zeroth
 
     def getZerothProfile(self, bins=None, nbins=50, low=0, high=-1,
-                         removeCont=1, bunit=None, vunit='km/s', mask=True,
+                         removeCont=True, bunit=None, vunit='km/s', mask=True,
                          beamparams=None):
         """Get the radial profile of the zeroth moment."""
         # Generate the radial grid if not specified.
@@ -233,32 +229,41 @@ class cubeclass:
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
+    def getPVDiagram(self, angle=0.0, chan=None, removeCont=1, beamparams=None, bunit='Jy/pixel'):
+        """Create a PV diagram. 'angle' is the angle between the position axis
+        and the disk position angle. If 'chan' is not None, only use that
+        channel."""
 
-    def getFirst(self, low=0, high=-1, removeCont=1, method=1, vunit='km/s',
+        if (chan is not None and type(chan) is not int):
+            raise TypeError('chan, if specified, should be an integer.')
+
+        if beamparams is None:
+            beam = None
+        else:
+            beam = beam(beamparams=beamparams)
+
+        data = self.clipData(removeCont=removeCont, beam=beam)
+        data *= self.convertBunit(bunit, beam=beam)
+
+        if chan is not None:
+            return data[:,chan]
+        else:
+            return np.sum(data, axis=1)
+
+    def getFirst(self, low=0, high=-1, removeCont=1, vunit='km/s',
                  mask=True, beam=None):
         """Calculates the first moment by two methods: 1, intensity weighted;
         2, velocity of maximum emission."""
-
         velo = self.clipVelo(low=low, high=high, vunit=vunit)
         data = self.clipData(low=low, high=high, removeCont=removeCont,
                              beam=beam)
-        if method == 1:
-            data = np.where(data == 0.0,
-                            1e-30 * np.random.random(data.shape),
-                            data)
-            first = np.average(velo[:, None, None] * np.ones(data.shape),
-                               weights=data, axis=0)
-        elif method == 2:
-            first = np.array([[velo[data[:, j, i].argmax()]
-                               for i in range(self.npix)]
-                              for j in range(self.npix)])
-        else:
-            raise ValueError("Method must be 1 or 2. See help for more.")
+        data = np.where(data == 0.0, 1e-30 * np.random.random(data.shape), data)
+        first = np.average(velo[:, None, None] * np.ones(data.shape), weights=data, axis=0)
+
         if mask:
             return first * self.getMask()
         else:
             return first
-
 
     def getSecond(self, low=0, high=-1, removeCont=1,
                   vunit='km/s', mask=True, beam=None):
@@ -285,14 +290,20 @@ class cubeclass:
             self.mask = np.where(mask == mask.min(), maskval, 1)
         return self.mask
 
-    def getNaNMask(self):
-        raise NotImplementedError("Change!")
-        if not hasattr(self, 'nanmask'):
-            mask = np.sum(self.data, axis=0)
-            self.nanmask = np.where(mask == mask.min(), np.nan, 1)
-        return self.nanmask
-
-
+    def getIntegratedIntensity(self, removeCont=1, low=0, high=-1, bunit='Jy', vunit='km/s'):
+        """Return the integrated intensity."""
+        data = self.clipData(low=low, high=high, removeCont=removeCont)
+        velo = self.clipVelo(low=low, high=high, vunit=vunit)
+        if bunit.lower() == 'k':
+            bunit = 'k'
+        elif 'mjy' in bunit.lower():
+            bunit = 'mjyperpixel'
+        elif 'jy' in bunit.lower():
+            bunit = 'jyperpixel'
+        else:
+            raise ValueError('bunit must be either mJy, Jy or K.')
+        data *= self.convertBunit(bunit)
+        return velo, np.array([np.sum(c) for c in data])
 
     # Get the Radial profile of the second moment.
     def getSecondProfile(self, bins=None, nbins=50, lowchan=0,
@@ -314,6 +325,9 @@ class cubeclass:
                         for r in range(1, nbins+1)])
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
+
+
+    #### Brightness unit conversions. ##########################################
 
     def brightnessconversions(self):
         """Calculate the conversion brightness unit factors."""
@@ -356,7 +370,6 @@ class cubeclass:
             print 'Warning, no beam specified! Reverting to per pixel.'
         return rescale
 
-
     def JanskytoKelvin(self, beam=None):
         """Jansky to Kelvin conversion. If no beam specified will return Jy/pix,
         else will return Jy/beam."""
@@ -366,28 +379,23 @@ class cubeclass:
         if beam is None:
             jy2k /= np.radians(fits.getval(self.filename, 'cdelt2', 0))**2.
         else:
-            jy2k /= beam
+            jy2k /= beam.area
         return jy2k
 
 
-    def getIntegratedIntensity(self, removeCont=1, low=0, high=-1, bunit='Jy', vunit='km/s'):
-        """Return the integrated intensity."""
-        data = self.clipData(low=low, high=high, removeCont=removeCont)
-        velo = self.clipVelo(low=low, high=high, vunit=vunit)
-        if bunit.lower() == 'k':
-            bunit = 'k'
-        elif 'mjy' in bunit.lower():
-            bunit = 'mjyperpixel'
-        elif 'jy' in bunit.lower():
-            bunit = 'jyperpixel'
-        else:
-            raise ValueError('bunit must be either mJy, Jy or K.')
-        data *= self.convertBunit(bunit)
-        return velo, np.array([np.sum(c) for c in data])
+    #### Plotting helper functions. ############################################
+
+    def plotIsoRadius(self, isoradius, M_star, vunit='km/s'):
+        """Plot contours of iso-radius in the PV diagram."""
+        p = self.posax * self.dist * sc.au
+        r = isoradius * sc.au
+        v = np.sqrt(sc.G * M_star * 2e30 / r) * np.sin(self.inc)
+        return v * np.cos(np.arctan2(np.sqrt(r**2 - p**2), p))
+
 
 
     def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k'):
-        """Plot the beam on the supplied axes."""
+        """Plot the beam size."""
         if beamparams is None:
             return
         beam = beamclass(beamparams)
@@ -406,7 +414,7 @@ class cubeclass:
 
 
     def plotOutline(self, ax, level=0.99, lw=.5, c='k', ls='-'):
-        """Plot the outline of the emission on teh supplied axes."""
+        """Plot the outline of the emission."""
         ax.contour(self.posax, self.posax, self.getMask(), [level],
                    linewidths=[lw], colors=[c], linestyles=[ls])
         return
