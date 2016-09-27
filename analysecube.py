@@ -191,6 +191,8 @@ class cubeclass:
             beam = beamclass(beamparams)
         else:
             beam = None
+        if bunit is not None:
+            bunit = bunit.lower()
         # Calculate a quick zeroth momenet. TODO: Include a dictionary here.
         velo = self.clipVelo(low=low, high=high, vunit=vunit)
         data = self.clipData(low=low, high=high, removeCont=removeCont, beam=beam)
@@ -199,10 +201,10 @@ class cubeclass:
         # If quick_convolve, only convolve the zeroth moment, else the whole cube.
         if (beam is not None and self.quick_convolve):
             try:
-                zeroth = self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit.lower()]
+                zeroth = self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit]
             except:
                 zeroth = self.convolveChannel(zeroth, beam)
-                self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit.lower()] = zeroth
+                self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit] = zeroth
         # Return a masked, or unmasked, zeroth moment.
         if mask:
             return zeroth * self.getMask()
