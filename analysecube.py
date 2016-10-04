@@ -9,9 +9,7 @@ from scipy.ndimage.interpolation import rotate
 
 class beamclass:
     """Beam object to pass to convolution functions."""
-
     def __init__(self, beamparams):
-
         if type(beamparams) is float:
             self.maj = beamparams
             self.min = beamparams
@@ -24,29 +22,27 @@ class beamclass:
             self.min, self.maj, self.pa = beamparams
         else:
             raise ValueError("beamparams = [b_min, b_maj, b_pa]")
-
         if self.min > self.maj:
             tmp = self.min
             self.min = self.maj
             self.maj = tmp
-
         self.pa = np.radians(self.pa % 360.)
         self.area = np.pi * self.min * self.maj / 4. / np.log(2)
-
         return
 
 
 class cubeclass:
     """Datacube read in from LIME."""
-
-    def __init__(self, path, dist=None, inc=None, pa=None,
-                 quick_convolve=True):
-        """Read in the data and calculate the cube axes."""
+    def __init__(self, path, dist=None, inc=None, pa=None):
         self.filename = path
-        self.data = fits.getdata(self.filename, 0)
         self.velax = self.getVelocityAxis()
         self.posax = self.getPositionAxis()
         self.specax = self.getSpectralAxis()
+
+        # data, full cube; line, continuum removed cube; cont, continuum cube.
+        self.data = fits.getdata(self.filename, 0)
+        self.line = None
+        self.cont = self.data[0][None, :, :] * np.ones(self.velax.size)[:, None, None]
 
         # Try and read in values from header, should work with makeLIME.py.
         if inc is None:
@@ -79,7 +75,7 @@ class cubeclass:
             self.pa = pa
 
         # Commonly used values.
-        self.quick_convolve = quick_convolve
+        self.quick_convolve = True
         self.x0 = getval(self.filename, 'crpix1', 0) - 1.
         self.y0 = getval(self.filename, 'crpix2', 0) - 1.
         self.nchan = self.velax.size
@@ -95,6 +91,7 @@ class cubeclass:
         self.tvals = np.arctan2(self.y, self.x)
         self.convolved_cubes = {}
         self.convolved_zeroths = {}
+        self.convolved_continuum = {}
         return
 
 
@@ -128,14 +125,14 @@ class cubeclass:
 
 
     def convolveCube(self, beam):
-        """Convolve the datacube with a beam."""
+        """Convolve the full datacube with a beam."""
         try:
-            return self.convolved_cubes[beam_maj, beam_min, beam_pa]
+            return self.convolved_cubes[beam.maj, beam.min, beam.pa]
         except:
             print 'Convolving cube. May take a while.'
-        cube = [self.convolveChannel(chan, beam) for chan in self.data]
-        self.convolved_cubes[beam_maj, beam_min, beam_pa] = np.array(cube)
-        return self.convolved_cubes[beam_maj, beam_min, beam_pa]
+        cube = [self.convolveChannel(chan, beam) for chan in self.data.copy()]
+        self.convolved_cubes[beam.maj, beam.min, beam.pa] = np.array(cube)
+        return self.convolved_cubes[beam.maj, beam.min, beam.pa]
 
 
     def getPositionAxis(self):
@@ -147,11 +144,11 @@ class cubeclass:
 
 
     def getVelocityAxis(self):
-        """Returns the velocity axis in m/s."""
+        """Returns the velocity axis in km/s."""
         a_len = getval(self.filename, 'naxis3', 0)
         a_del = getval(self.filename, 'cdelt3', 0)
         a_pix = getval(self.filename, 'crpix3', 0)
-        return (np.arange(1, a_len+1) - a_pix) * a_del
+        return (np.arange(1, a_len+1) - a_pix) * a_del / 1e3
 
 
     def getSpectralAxis(self):
@@ -160,14 +157,12 @@ class cubeclass:
         return self.getVelocityAxis() * nu / sc.c
 
 
-    def clipData(self, low=0, high=-1, removeCont=True, beam=None):
+    def clipData(self, low=0, high=-1, beam=None):
         """Clip the datacube to specific channels and remove continuum."""
         if beam is None or self.quick_convolve:
             data = self.data.copy()
         else:
             data = self.convolveCube(beam)
-        if removeCont:
-            data = np.array([chan - data[0] for chan in data])
         if high == -1:
             high = data.shape[0] + 1
         data = data[low:high]
@@ -184,50 +179,81 @@ class cubeclass:
         return np.array(velo)
 
 
-    def getZeroth(self, low=0, high=-1, removeCont=True, bunit=None,
-                  vunit='km/s', mask=True, beamparams=None):
-        """Returns the zeroth moment map. Convolve if necessary."""
+    def getZeroth(self, removeCont=True, bunit=None, mask=True, beamparams=None):
+        """Returns the zeroth moment map, including convolution."""
         if beamparams is not None:
             beam = beamclass(beamparams)
         else:
             beam = None
         if bunit is not None:
             bunit = bunit.lower()
-        # Calculate a quick zeroth momenet. TODO: Include a dictionary here.
-        velo = self.clipVelo(low=low, high=high, vunit=vunit)
-        data = self.clipData(low=low, high=high, removeCont=removeCont, beam=beam)
-        data *= self.convertBunit(bunit, beam=beam)
-        zeroth = np.trapz(data, dx=abs(np.diff(velo)[0]), axis=0)
-        # If quick_convolve, only convolve the zeroth moment, else the whole cube.
-        if (beam is not None and self.quick_convolve):
-            try:
-                zeroth = self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit]
-            except:
-                zeroth = self.convolveChannel(zeroth, beam)
-                self.convolved_zeroths[beam.maj, beam.min, beam.pa, bunit] = zeroth
-        # Return a masked, or unmasked, zeroth moment.
-        if mask:
-            return zeroth * self.getMask()
+        if beam is None:
+            if removeCont:
+                if self.line is None:
+                    self.line = [chan - self.data[0] for chan in self.data]
+                    self.line = np.array(self.line)
+                zeroth = np.trapz(self.line, self.velax, axis=0)
+            else:
+                zeroth = np.trapz(self.data, self.velax, axis=0)
+        elif self.quick_convolve:
+            zeroth = np.trapz(self.data, self.velax, axis=0)
+            zeroth = self.convolveChannel(zeroth, beam)
+            if removeCont:
+                zeroth -= self.convolvedContinuum(beam)
         else:
-            return zeroth
+            zeroth = np.trapz(self.convolveCube(beam), self.velax, axis=0)
+            if removeCont:
+                zeroth -= self.convolvedContinuum(beam)
+        zeroth *= self.convertBunit(bunit, beam=beam)
+        return zeroth * self.getMask(mask=mask)
 
-    def getZerothProfile(self, bins=None, nbins=50, low=0, high=-1,
-                         removeCont=True, bunit=None, vunit='km/s', mask=True,
+
+    def convolvedContinuum(self, beam):
+        """Return the convolved continuum for zeroth moment subtraction."""
+        try:
+            return self.convolved_continuum[beam.maj, beam.min, beam.pa]
+        except:
+            cont = np.trapz(self.cont, self.velax, axis=0)
+            cont = self.convolveChannel(cont, beam)
+            self.convolved_continuum[beam.maj, beam.min, beam.pa] = cont
+        return self.convolved_continuum[beam.maj, beam.min, beam.pa]
+
+    def getMaximum(self, removeCont=True, bunit=None, beamparams=None):
+        raise NotImplementedError('Not done yet!')
+        return
+
+
+    def getZerothProfile(self, bins=None, nbins=50, removeCont=True, bunit=None,
                          beamparams=None):
-        """Get the radial profile of the zeroth moment."""
-        # Generate the radial grid if not specified.
+        """Returns the radial profile of the zeroth moment."""
+        if bins is None:
+            bins = np.linspace(0, 1.2 * self.posax.max(), nbins + 1)
+        else:
+            nbins = len(bins) - 1
+        ridxs = np.digitize(self.rvals.ravel(), bins)
+        zeroth = self.getZeroth(removeCont=removeCont, bunit=bunit,
+                                beamparams=beamparams).ravel()
+        avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        rad = np.average([bins[1:], bins[:-1]], axis=0)
+        return np.array([rad, avg, std])
+
+    def getMaximumProfile(self, bins=None, nbins=50, removeCont=True):
+        """Return the maximum brightness along the line of sight."""
         if bins is None:
             bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
         else:
             nbins = len(bins)-1
+
         ridxs = np.digitize(self.rvals.ravel(), bins)
-        # Return the zeroth moment with requested parameters.
-        zeroth = self.getZeroth(low=low, high=high, removeCont=removeCont,
-                                bunit=bunit, vunit=vunit, mask=mask,
-                                beamparams=beamparams).ravel()
-        # Calculate the mean and standard devation of each radial bin.
-        avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
-        std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        if removeCont:
+            maxvals = np.amax(self.line, axis=0)
+        else:
+            maxvals = np.amax(self.data, axis=0)
+        maxvals *= self.convertBunit('K')
+        maxvals = maxvals.ravel()
+        avg = [np.nanmean(maxvals[ridxs == r]) for r in range(1, nbins+1)]
+        std = [np.nanstd(maxvals[ridxs == r]) for r in range(1, nbins+1)]
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
@@ -262,10 +288,7 @@ class cubeclass:
         data = np.where(data == 0.0, 1e-30 * np.random.random(data.shape), data)
         first = np.average(velo[:, None, None] * np.ones(data.shape), weights=data, axis=0)
 
-        if mask:
-            return first * self.getMask()
-        else:
-            return first
+        return first * self.getMask(mask=mask)
 
     def getSecond(self, low=0, high=-1, removeCont=1,
                   vunit='km/s', mask=True, beam=None):
@@ -285,17 +308,25 @@ class cubeclass:
         else:
             return second
 
-    def getMask(self, maskval=np.nan):
-        """Mask non-disk model points."""
+    def getMask(self, mask=True, maskval=np.nan):
+        """Returns a mask of the regions where there is no emission."""
+        if not mask:
+            return 1.
         if not hasattr(self, 'mask'):
             mask = np.sum(self.data, axis=0)
             self.mask = np.where(mask == mask.min(), maskval, 1)
         return self.mask
 
-    def getIntegratedIntensity(self, removeCont=1, low=0, high=-1, bunit='Jy', vunit='km/s'):
+    def getIntegratedIntensity(self, removeCont=True, bunit='Jy'):
         """Return the integrated intensity."""
-        data = self.clipData(low=low, high=high, removeCont=removeCont)
-        velo = self.clipVelo(low=low, high=high, vunit=vunit)
+        velo = self.velax.copy()
+        if removeCont:
+            if self.line is None:
+                self.line = [chan - self.data[0] for chan in self.data]
+                self.line = np.array(self.line)
+            data = self.line
+        else:
+            data = self.data.copy()
         if bunit.lower() == 'k':
             bunit = 'k'
         elif 'mjy' in bunit.lower():
@@ -396,22 +427,16 @@ class cubeclass:
 
 
 
-    def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k'):
-        """Plot the beam size."""
+    def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k',
+                 hatch='/////////', linewidth=1.25):
         if beamparams is None:
             return
         beam = beamclass(beamparams)
         x_pos = x * (ax.get_xlim()[1] - ax.get_xlim()[0]) + ax.get_xlim()[0]
         y_pos = y * (ax.get_ylim()[1] - ax.get_ylim()[0]) + ax.get_ylim()[0]
-        ax.add_patch(Ellipse((x_pos, y_pos),
-                             width = beam.min,
-                             height = beam.maj,
-                             angle = np.degrees(beam.pa),
-                             fill = False,
-                             hatch = '////',
-                             lw = 1.25,
-                             color = color,
-                             transform = ax.transData))
+        ax.add_patch(Ellipse((x_pos, y_pos), width=beam.min, height=beam.maj,
+                             angle=np.degrees(beam.pa), fill=False, hatch=hatch,
+                             lw=linewidth, color=color, transform=ax.transData))
         return
 
 
