@@ -100,39 +100,8 @@ class cubeclass:
         return beam.area / np.diff(self.posax)[0]**2
 
 
-    def beamKernel(self, beam):
-        """Generate a beam kernel for the convolution."""
-        sig_x = beam.maj / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
-        sig_y = beam.min / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
-        grid = np.arange(-np.round(sig_x) * 8, np.round(sig_x) * 8 + 1)
-        a = np.cos(beam.pa)**2 / 2. / sig_x**2
-        a += np.sin(beam.pa)**2 / 2. / sig_y**2
-        b = np.sin(2. * beam.pa) / 4. / sig_y**2
-        b -= np.sin(2. * beam.pa) / 4. / sig_x**2
-        c = np.sin(beam.pa)**2 / 2. / sig_x**2
-        c += np.cos(beam.pa)**2 / 2. / sig_y**2
-        kernel = c * grid[:, None]**2 + a * grid[None, :]**2
-        kernel += 2 * b * grid[:, None] * grid[None, :]
-        return np.exp(-kernel) / 2. / np.pi / sig_x / sig_y
 
 
-    def convolveChannel(self, channel, beam):
-        """Returns the convolved channel or moment map with the beam."""
-        return convolve(channel, self.beamKernel(beam))
-
-        self.convolved_zeroths[beam_maj, beam_min, beam_pa] = conv_zeroth
-        return self.convolved_zeroths[beam_maj, beam_min, beam_pa]
-
-
-    def convolveCube(self, beam):
-        """Convolve the full datacube with a beam."""
-        try:
-            return self.convolved_cubes[beam.maj, beam.min, beam.pa]
-        except:
-            print 'Convolving cube. May take a while.'
-        cube = [self.convolveChannel(chan, beam) for chan in self.data.copy()]
-        self.convolved_cubes[beam.maj, beam.min, beam.pa] = np.array(cube)
-        return self.convolved_cubes[beam.maj, beam.min, beam.pa]
 
 
     def getPositionAxis(self):
@@ -179,14 +148,18 @@ class cubeclass:
         return np.array(velo)
 
 
-    def getZeroth(self, removeCont=True, bunit=None, mask=True, beamparams=None):
-        """Returns the zeroth moment map, including convolution."""
+    def getZeroth(self, removeCont=True, bunit=None, mask=True,
+                  beamparams=None, snr=None):
+        """Returns the zeroth moment map, including convolution. snr specifies
+        the signal to noise peak. So noise = signal.max() / snr."""
+
         if beamparams is not None:
             beam = beamclass(beamparams)
         else:
             beam = None
         if bunit is not None:
             bunit = bunit.lower()
+
         if beam is None:
             if removeCont:
                 if self.line is None:
@@ -197,9 +170,9 @@ class cubeclass:
                 zeroth = np.trapz(self.data, self.velax, axis=0)
         elif self.quick_convolve:
             zeroth = np.trapz(self.data, self.velax, axis=0)
-            zeroth = self.convolveChannel(zeroth, beam)
+            zeroth = self.convolveChannel(zeroth, beam, snr=snr)
             if removeCont:
-                zeroth -= self.convolvedContinuum(beam)
+                zeroth -= self.convolvedContinuum(beam, snr=snr)
         else:
             zeroth = np.trapz(self.convolveCube(beam), self.velax, axis=0)
             if removeCont:
@@ -207,24 +180,13 @@ class cubeclass:
         zeroth *= self.convertBunit(bunit, beam=beam)
         return zeroth * self.getMask(mask=mask)
 
-
-    def convolvedContinuum(self, beam):
-        """Return the convolved continuum for zeroth moment subtraction."""
-        try:
-            return self.convolved_continuum[beam.maj, beam.min, beam.pa]
-        except:
-            cont = np.trapz(self.cont, self.velax, axis=0)
-            cont = self.convolveChannel(cont, beam)
-            self.convolved_continuum[beam.maj, beam.min, beam.pa] = cont
-        return self.convolved_continuum[beam.maj, beam.min, beam.pa]
-
     def getMaximum(self, removeCont=True, bunit=None, beamparams=None):
         raise NotImplementedError('Not done yet!')
         return
 
 
     def getZerothProfile(self, bins=None, nbins=50, removeCont=True, bunit=None,
-                         beamparams=None):
+                         beamparams=None, snr=None):
         """Returns the radial profile of the zeroth moment."""
         if bins is None:
             bins = np.linspace(0, 1.2 * self.posax.max(), nbins + 1)
@@ -232,7 +194,7 @@ class cubeclass:
             nbins = len(bins) - 1
         ridxs = np.digitize(self.rvals.ravel(), bins)
         zeroth = self.getZeroth(removeCont=removeCont, bunit=bunit,
-                                beamparams=beamparams).ravel()
+                                beamparams=beamparams, snr=snr).ravel()
         avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         rad = np.average([bins[1:], bins[:-1]], axis=0)
@@ -241,16 +203,18 @@ class cubeclass:
     def getMaximumProfile(self, bins=None, nbins=50, removeCont=True):
         """Return the maximum brightness along the line of sight."""
         if bins is None:
-            bins = np.linspace(0, 1.2*self.posax.max(), nbins+1)
+            bins = np.linspace(0, 1.2 * self.posax.max(), nbins + 1)
         else:
-            nbins = len(bins)-1
-
+            nbins = len(bins) - 1
         ridxs = np.digitize(self.rvals.ravel(), bins)
         if removeCont:
+            if self.line is None:
+                self.line = [chan - self.data[0] for chan in self.data]
+                self.line = np.array(self.line)
             maxvals = np.amax(self.line, axis=0)
         else:
             maxvals = np.amax(self.data, axis=0)
-        maxvals *= self.convertBunit('K')
+        maxvals *= self.convertBunit(bunit='K')
         maxvals = maxvals.ravel()
         avg = [np.nanmean(maxvals[ridxs == r]) for r in range(1, nbins+1)]
         std = [np.nanstd(maxvals[ridxs == r]) for r in range(1, nbins+1)]
@@ -359,6 +323,56 @@ class cubeclass:
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
+
+    #### Convolution functions. ################################################
+
+    def beamKernel(self, beam):
+        """Generate a beam kernel for the convolution."""
+        sig_x = beam.maj / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
+        sig_y = beam.min / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
+        grid = np.arange(-np.round(sig_x) * 8, np.round(sig_x) * 8 + 1)
+        a = np.cos(beam.pa)**2 / 2. / sig_x**2
+        a += np.sin(beam.pa)**2 / 2. / sig_y**2
+        b = np.sin(2. * beam.pa) / 4. / sig_y**2
+        b -= np.sin(2. * beam.pa) / 4. / sig_x**2
+        c = np.sin(beam.pa)**2 / 2. / sig_x**2
+        c += np.cos(beam.pa)**2 / 2. / sig_y**2
+        kernel = c * grid[:, None]**2 + a * grid[None, :]**2
+        kernel += 2 * b * grid[:, None] * grid[None, :]
+        return np.exp(-kernel) / 2. / np.pi / sig_x / sig_y
+
+    def convolvedContinuum(self, beam, snr=None):
+        """Return the convolved continuum for zeroth moment subtraction."""
+        try:
+            return self.convolved_continuum[beam.maj, beam.min, beam.pa, snr]
+        except:
+            cont = np.trapz(self.cont, self.velax, axis=0)
+            cont = self.convolveChannel(cont, beam, snr=snr)
+            self.convolved_continuum[beam.maj, beam.min, beam.pa, snr] = cont
+        return self.convolved_continuum[beam.maj, beam.min, beam.pa, snr]
+
+    def convolveChannel(self, channel, beam, snr=None):
+        """Returns the convolved channel or moment map with the beam."""
+        if snr is not None:
+            channel = self.addNoise(channel, snr=snr)
+        return convolve(channel, self.beamKernel(beam))
+
+    def addNoise(self, channel, snr):
+        """Add noise to the channel."""
+        noise = np.nanmax(channel) / snr
+        noise *= np.random.randn(channel.size).reshape(channel.shape)
+        channel += noise
+        return channel
+
+    def convolveCube(self, beam):
+        """Convolve the full datacube with a beam."""
+        try:
+            return self.convolved_cubes[beam.maj, beam.min, beam.pa]
+        except:
+            print 'Convolving cube. May take a while.'
+        cube = [self.convolveChannel(chan, beam) for chan in self.data.copy()]
+        self.convolved_cubes[beam.maj, beam.min, beam.pa] = np.array(cube)
+        return self.convolved_cubes[beam.maj, beam.min, beam.pa]
 
     #### Brightness unit conversions. ##########################################
 
