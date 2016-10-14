@@ -195,6 +195,7 @@ class cubeclass:
         ridxs = np.digitize(self.rvals.ravel(), bins)
         zeroth = self.getZeroth(removeCont=removeCont, bunit=bunit,
                                 beamparams=beamparams, snr=snr).ravel()
+        zeroth = np.where(np.isnan(zeroth), 0., zeroth)
         avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         rad = np.average([bins[1:], bins[:-1]], axis=0)
@@ -221,38 +222,42 @@ class cubeclass:
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
-    def getPVDiagram(self, angle=0.0, chan=None, removeCont=1, beamparams=None, bunit='Jy/pixel'):
-        """Create a PV diagram. 'angle' is the angle between the position axis
-        and the disk position angle. If 'chan' is not None, only use that
-        channel."""
 
-        if (chan is not None and type(chan) is not int):
-            raise TypeError('chan, if specified, should be an integer.')
-
+    def getFirst(self, removeCont=1, vunit='km/s', mask=True, beamparams=None,
+                 snr=None):
+        """Returns the first moment of the data."""
         if beamparams is None:
             beam = None
         else:
-            beam = beam(beamparams=beamparams)
-
-        data = self.clipData(removeCont=removeCont, beam=beam)
-        data *= self.convertBunit(bunit, beam=beam)
-
-        if chan is not None:
-            return data[:,chan]
+            beam = beamclass(beamparams)
+        if (beam is None or self.quick_convolve):
+            if removeCont:
+                if self.line is None:
+                    self.line = [chan - self.data[0] for chan in self.data]
+                    self.line = np.array(self.line)
+                iweights = np.where(self.line == 0.0,
+                                    1e-30 * np.random.random(self.line.shape),
+                                    self.line)
+            else:
+                iweights = np.where(self.data == 0.0,
+                                    1e-30 * np.random.random(self.data.shape),
+                                    self.data)
+            if snr is not None:
+                iweights = [self.addNoise(chan, snr) for chan in iweights]
+                iweights = np.array(iweights)
         else:
-            return np.sum(data, axis=1)
-
-    def getFirst(self, low=0, high=-1, removeCont=1, vunit='km/s',
-                 mask=True, beam=None):
-        """Calculates the first moment by two methods: 1, intensity weighted;
-        2, velocity of maximum emission."""
-        velo = self.clipVelo(low=low, high=high, vunit=vunit)
-        data = self.clipData(low=low, high=high, removeCont=removeCont,
-                             beam=beam)
-        data = np.where(data == 0.0, 1e-30 * np.random.random(data.shape), data)
-        first = np.average(velo[:, None, None] * np.ones(data.shape), weights=data, axis=0)
-
+            convcube = self.convolveCube(beam, snr)
+            iweights = np.where(convcube == 0.0,
+                                1e-30 * np.random.random(convcube.shape),
+                                convcube)
+            if removeCont:
+                iweights -= self.convolvedContinuum(beam)
+        vcube = self.velax[:, None, None] * np.ones(iweights.shape)
+        first = np.average(vcube, weights=iweights, axis=0)
+        if (beam is not None and self.quick_convolve):
+            first = self.convolveChannel(first, beam)
         return first * self.getMask(mask=mask)
+
 
     def getSecond(self, low=0, high=-1, removeCont=1,
                   vunit='km/s', mask=True, beam=None):
@@ -359,20 +364,26 @@ class cubeclass:
 
     def addNoise(self, channel, snr):
         """Add noise to the channel."""
+        """Need to check if this is for channel or for zeroth."""
         noise = np.nanmax(channel) / snr
         noise *= np.random.randn(channel.size).reshape(channel.shape)
         channel += noise
         return channel
 
-    def convolveCube(self, beam):
+    def convolveCube(self, beam, snr=None):
         """Convolve the full datacube with a beam."""
         try:
-            return self.convolved_cubes[beam.maj, beam.min, beam.pa]
+            return self.convolved_cubes[beam.maj, beam.min, beam.pa, snr]
         except:
             print 'Convolving cube. May take a while.'
-        cube = [self.convolveChannel(chan, beam) for chan in self.data.copy()]
-        self.convolved_cubes[beam.maj, beam.min, beam.pa] = np.array(cube)
-        return self.convolved_cubes[beam.maj, beam.min, beam.pa]
+        if snr is  None:
+            datacube = self.data
+        else:
+            datacube = [self.addNoise(chan, snr) for chan in self.data]
+            datacube = np.array(datacube)
+        convcube = [self.convolveChannel(chan, beam) for chan in datacube]
+        self.convolved_cubes[beam.maj, beam.min, beam.pa, snr] = np.array(convcube)
+        return self.convolved_cubes[beam.maj, beam.min, beam.pa, snr]
 
     #### Brightness unit conversions. ##########################################
 
