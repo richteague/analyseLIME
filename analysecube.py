@@ -1,5 +1,6 @@
 import os
 import numpy as np
+from string import letters
 from astropy.io import fits
 import scipy.constants as sc
 from astropy.io.fits import getval
@@ -10,7 +11,12 @@ from scipy.ndimage.interpolation import rotate
 class beamclass:
     """Beam object to pass to convolution functions."""
     def __init__(self, beamparams):
-        if type(beamparams) is float:
+        if beamparams is None:
+            self.maj = None
+            self.min = None
+            self.pa = None
+            return
+        elif type(beamparams) is float:
             self.maj = beamparams
             self.min = beamparams
             self.pa = 0.0
@@ -28,6 +34,7 @@ class beamclass:
             self.maj = tmp
         self.pa = np.radians(self.pa % 360.)
         self.area = np.pi * self.min * self.maj / 4. / np.log(2)
+        self.eff = np.sqrt(self.min * self.maj)
         return
 
 
@@ -38,11 +45,9 @@ class cubeclass:
         self.velax = self.getVelocityAxis()
         self.posax = self.getPositionAxis()
         self.specax = self.getSpectralAxis()
-
-        # data, full cube; line, continuum removed cube; cont, continuum cube.
         self.data = fits.getdata(self.filename, 0)
-        self.line = None
         self.cont = self.data[0][None, :, :] * np.ones(self.velax.size)[:, None, None]
+        self.line = None
 
         # Try and read in values from header, should work with makeLIME.py.
         if inc is None:
@@ -75,34 +80,40 @@ class cubeclass:
             self.pa = pa
 
         # Commonly used values.
-        self.quick_convolve = True
         self.x0 = getval(self.filename, 'crpix1', 0) - 1.
         self.y0 = getval(self.filename, 'crpix2', 0) - 1.
         self.nchan = self.velax.size
         self.npix = self.posax.size
 
-        # Parse the brightness unit.
-        # Should make it easier to calculate converions.
         self.bunit, self.tounit = self.brightnessconversions()
         self.x = self.posax[None, :]
         self.y = self.posax[:, None] / np.cos(self.inc)
-        self.pixscale = np.diff(self.posax)[0]
+        self.pixscale = abs(getval(self.filename, 'cdelt1', 0)) * 3600.
         self.rvals = np.hypot(self.x, self.y)
         self.tvals = np.arctan2(self.y, self.x)
-        self.convolved_cubes = {}
-        self.convolved_zeroths = {}
-        self.convolved_continuum = {}
+        self.conv_zeroths = {}
+        self.conv_chans = {}
+        self.sgnlperchan = None
+        self.line = None
         return
 
+
+    def estimateSignal(self):
+        """Estimates the signal per channel."""
+        if self.sgnlperchan is None:
+            linemax = np.amax(np.amax(self.onlyline(), axis=1), axis=1)
+            self.sgnlperchan = np.percentile(linemax, 64.)
+        return self.sgnlperchan
+
+    def onlyline(self):
+        """Returns the line emission."""
+        if self.line is None:
+            self.line = np.array([chan - self.data[0] for chan in self.data])
+        return self.line
 
     def pixtobeam(self, beam):
         """Jy/beam = Jy/pix * pixtobeam()"""
         return beam.area / np.diff(self.posax)[0]**2
-
-
-
-
-
 
     def getPositionAxis(self):
         """Returns the position axis in arcseconds."""
@@ -111,7 +122,6 @@ class cubeclass:
         a_pix = getval(self.filename, 'crpix2', 0)
         return 3600. * ((np.arange(1, a_len+1) - a_pix) * a_del)
 
-
     def getVelocityAxis(self):
         """Returns the velocity axis in km/s."""
         a_len = getval(self.filename, 'naxis3', 0)
@@ -119,87 +129,140 @@ class cubeclass:
         a_pix = getval(self.filename, 'crpix3', 0)
         return (np.arange(1, a_len+1) - a_pix) * a_del / 1e3
 
-
     def getSpectralAxis(self):
         """Returns the spectral axis in Hz."""
         nu = getval(self.filename, 'restfreq', 0)
         return self.getVelocityAxis() * nu / sc.c
-
-
-    def clipData(self, low=0, high=-1, beam=None):
-        """Clip the datacube to specific channels and remove continuum."""
-        if beam is None or self.quick_convolve:
-            data = self.data.copy()
-        else:
-            data = self.convolveCube(beam)
-        if high == -1:
-            high = data.shape[0] + 1
-        data = data[low:high]
-        return np.where(data >= 0., data, 0.)
-
-
-    def clipVelo(self, low, high, vunit='km/s'):
-        """Clip the velocity axis and convert units if necessary."""
-        velo = self.velax.copy()
-        velo = [velo[i] for i in range(low, self.nchan+1)[:high]]
-        velo = np.array(velo)
-        if 'kms' in vunit.replace('/', '').replace('per', ''):
-            velo /= 1e3
-        return np.array(velo)
-
-
-    def getZeroth(self, removeCont=True, bunit=None, mask=True,
-                  beamparams=None, snr=None):
-        """Returns the zeroth moment map, including convolution. snr specifies
-        the signal to noise peak. So noise = signal.max() / snr."""
-
-        if beamparams is not None:
-            beam = beamclass(beamparams)
-        else:
-            beam = None
-        if bunit is not None:
-            bunit = bunit.lower()
-
+        
+    def convolve2D(self, arr, **kwargs):
+        """Convolves a 2D array with a beam."""
+        beam = kwargs.get('beam', None)
         if beam is None:
-            if removeCont:
-                if self.line is None:
-                    self.line = [chan - self.data[0] for chan in self.data]
-                    self.line = np.array(self.line)
-                zeroth = np.trapz(self.line, self.velax, axis=0)
-            else:
-                zeroth = np.trapz(self.data, self.velax, axis=0)
-        elif self.quick_convolve:
-            zeroth = np.trapz(self.data, self.velax, axis=0)
-            zeroth = self.convolveChannel(zeroth, beam, snr=snr)
-            if removeCont:
-                zeroth -= self.convolvedContinuum(beam, snr=snr)
+            return arr
+        return convolve(arr, self.beamKernel(beamclass(beam)))
+    
+    def noiseFactor(self, **kwargs):
+        """Rescale the noise to account for convolution."""
+        beam = kwargs.get('beam', None)
+        if beam is None:
+            return 1.
+        beam = beamclass(beam) 
+        return max(1, 1.07 * np.power(beam.eff / self.pixscale, 1.326))
+        
+    def addNoise(self, arr, onlychannel=False, **kwargs):
+        """Add noise to the array (e.g. a channel or moment map)."""
+        snr = kwargs.get('snr', None)
+        if snr is None:
+            return arr    
+        if onlychannel:
+            signal = self.estimateSignal()
         else:
-            zeroth = np.trapz(self.convolveCube(beam), self.velax, axis=0)
-            if removeCont:
-                zeroth -= self.convolvedContinuum(beam)
-        zeroth *= self.convertBunit(bunit, beam=beam)
-        return zeroth * self.getMask(mask=mask)
+            signal = np.nanmax(self.getZeroth())
+        noise = signal * self.noiseFactor(**kwargs) / snr
+        noise *= np.random.random(arr.shape)
+        return arr + noise                
+    
+    def ZerothDict(self, **kwargs):
+        """Keywords for the pre-calculated zeroth moment dictionary."""
+        beam = beamclass(kwargs.get('beam', None))
+        return (kwargs.get('removeCont', True), beam.min, beam.maj, 
+                beam.pa, kwargs.get('snr', None))
+        
+    def getZeroth(self, **kwargs):
+        """Returns the zeroth moment map."""
+        
+        # See if the moment has been previously calculated.       
+        try:
+            zeroth = self.conv_zeroths[self.ZerothDict(**kwargs)].copy()
+            zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+            return zeroth
+        except:
+            pass
+            
+        # If not, calculate it.
+        zeroth = np.trapz(self.data.copy(), self.velax, axis=0)
+        zeroth = self.addNoise(zeroth, **kwargs)
+        zeroth = self.convolve2D(zeroth, **kwargs)
+        
+        # Remove the continuum.
+        if kwargs.get('removeCont', False):
+            continuum = np.trapz(self.cont.copy(), self.velax, axis=0)
+            continuum = self.addNoise(continuum, **kwargs)
+            continuum = self.convolve2D(continuum, **kwargs)
+            zeroth -= continuum
+            
+        # Add the dictionary of pre-calculated zeroth moments. 
+        self.conv_zeroths[self.ZerothDict(**kwargs)] = zeroth.copy()
+        zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+        return zeroth
+
+    def getZerothProfile(self, bins=None, nbins=50, **kwargs):
+        """Returns the radial profile of the zeroth moment."""
+        
+        # Determine the bins.
+        if bins is None:
+            bins = np.linspace(0.05, 1.2 * self.posax.max(), nbins + 1)
+        else:
+            nbins = len(bins) - 1
+        ridxs = np.digitize(self.rvals.ravel(), bins)
+        
+        # Calculate the average and standard deviation for each bin.
+        zeroth = np.nan_to_num(self.getZeroth(**kwargs).ravel())
+        avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
+        rad = np.average([bins[1:], bins[:-1]], axis=0)
+        return np.array([rad, avg, std])
+
+
 
     def getMaximum(self, removeCont=True, bunit=None, beamparams=None):
         raise NotImplementedError('Not done yet!')
         return
 
-
-    def getZerothProfile(self, bins=None, nbins=50, removeCont=True, bunit=None,
-                         beamparams=None, snr=None):
-        """Returns the radial profile of the zeroth moment."""
-        if bins is None:
-            bins = np.linspace(0, 1.2 * self.posax.max(), nbins + 1)
+    def chanidx(self, c):
+        """Return the channel index. If c is a string, assume a velocity."""
+        if type(c) is str:
+            vel = float(c.translate(None, letters).replace('/', ''))
+            if not ('km' in c and 's' in c):
+                vel /= 1e3
+            c = abs(self.velax - vel).argmin()
         else:
-            nbins = len(bins) - 1
-        ridxs = np.digitize(self.rvals.ravel(), bins)
-        zeroth = self.getZeroth(removeCont=removeCont, bunit=bunit,
-                                beamparams=beamparams, snr=snr).ravel()
-        zeroth = np.where(np.isnan(zeroth), 0., zeroth)
-        avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
-        std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
-        rad = np.average([bins[1:], bins[:-1]], axis=0)
-        return np.array([rad, avg, std])
+            c = int(c)
+        return c
+        
+    def ChannelDict(self, c, **kwargs):
+        """Keywords for the pre-calculated channel dictionary."""
+        beam = beamclass(kwargs.get('beam', None))
+        return (self.chanidx(c), kwargs.get('removeCont', True), 
+                beam.min, beam.maj, beam.pa, kwargs.get('snr', None))
+
+
+    def getChannel(self, c, **kwargs):
+        """Returns a channel. Specify either a channel index for velocity."""
+        
+        # First see if the channel has already been called.
+        try:
+            chan = self.conv_chans[self.ChannelDict(c, **kwargs)].copy()
+            return chan * self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+        except:
+            pass
+            
+        # If not, calculate it.
+        chan = self.data[self.chanidx(c)].copy()
+        chan = self.addNoise(chan, onlychannel=True, **kwargs)
+        chan = self.convolve2D(chan, **kwargs)
+        
+        # Remove the continuum.           
+        if kwargs.get('removeCont', True):
+            continuum = self.data[0].copy()
+            continuum = self.addNoise(continuum, onlychannel=True, **kwargs)
+            continuum = self.convolve2D(continuum, **kwargs)
+            chan -= continuum
+        
+        # Add to the dictionary of pre-calculated channels and return.
+        self.conv_chans[self.ChannelDict(c, **kwargs)] = chan.copy()
+        return chan * self.getMask(**kwargs) * self.convertBunit(**kwargs)
+
 
     def getMaximumProfile(self, bins=None, nbins=50, removeCont=True):
         """Return the maximum brightness along the line of sight."""
@@ -223,41 +286,18 @@ class cubeclass:
         return np.array([rad, avg, std])
 
 
-    def getFirst(self, removeCont=1, vunit='km/s', mask=True, beamparams=None,
-                 snr=None):
+    def getFirst(self, **kwargs):
         """Returns the first moment of the data."""
-        if beamparams is None:
-            beam = None
-        else:
-            beam = beamclass(beamparams)
-        if (beam is None or self.quick_convolve):
-            if removeCont:
-                if self.line is None:
-                    self.line = [chan - self.data[0] for chan in self.data]
-                    self.line = np.array(self.line)
-                iweights = np.where(self.line == 0.0,
-                                    1e-30 * np.random.random(self.line.shape),
-                                    self.line)
-            else:
-                iweights = np.where(self.data == 0.0,
-                                    1e-30 * np.random.random(self.data.shape),
-                                    self.data)
-            if snr is not None:
-                iweights = [self.addNoise(chan, snr) for chan in iweights]
-                iweights = np.array(iweights)
-        else:
-            convcube = self.convolveCube(beam, snr)
-            iweights = np.where(convcube == 0.0,
-                                1e-30 * np.random.random(convcube.shape),
-                                convcube)
-            if removeCont:
-                iweights -= self.convolvedContinuum(beam)
-        vcube = self.velax[:, None, None] * np.ones(iweights.shape)
-        first = np.average(vcube, weights=iweights, axis=0)
-        if (beam is not None and self.quick_convolve):
-            first = self.convolveChannel(first, beam)
-        return first * self.getMask(mask=mask)
-
+        weights = self.onlyline()
+        noemission = np.where(np.sum(weights, axis=0) == 0, True, False)
+        weights = np.where(weights == 0.0, 
+                           1e-30 * np.random.random(weights.shape),
+                           weights)
+        vcube = self.velax[:, None, None] * np.ones(weights.shape)
+        first = np.average(vcube, weights=weights, axis=0)
+        first = np.where(noemission, 0., first)
+        first = self.convolve2D(first, **kwargs)
+        return first * self.getMask(**kwargs)
 
     def getSecond(self, low=0, high=-1, removeCont=1,
                   vunit='km/s', mask=True, beam=None):
@@ -277,35 +317,25 @@ class cubeclass:
         else:
             return second
 
-    def getMask(self, mask=True, maskval=np.nan):
-        """Returns a mask of the regions where there is no emission."""
-        if not mask:
-            return 1.
-        if not hasattr(self, 'mask'):
+    def getMask(self, **kwargs):
+        """Returns a mask for moment maps."""
+        if kwargs.get('mask', False):
             mask = np.sum(self.data, axis=0)
-            self.mask = np.where(mask == mask.min(), maskval, 1)
-        return self.mask
-
-    def getIntegratedIntensity(self, removeCont=True, bunit='Jy'):
-        """Return the integrated intensity."""
-        velo = self.velax.copy()
+            fill = kwargs.get('maskval', np.nan)
+            return np.where(mask == mask.min(), fill, 1.)
+        else:
+            return 1.
+            
+    def getFluxDensity(self, bunit='Jy', removeCont=True):
+        """Return the flux density."""
         if removeCont:
-            if self.line is None:
-                self.line = [chan - self.data[0] for chan in self.data]
-                self.line = np.array(self.line)
-            data = self.line
+            tosum = self.onlyline().copy()
         else:
-            data = self.data.copy()
-        if bunit.lower() == 'k':
-            bunit = 'k'
-        elif 'mjy' in bunit.lower():
-            bunit = 'mjyperpixel'
-        elif 'jy' in bunit.lower():
-            bunit = 'jyperpixel'
-        else:
-            raise ValueError('bunit must be either mJy, Jy or K.')
-        data *= self.convertBunit(bunit)
-        return velo, np.array([np.sum(c) for c in data])
+            tosum = self.data.copy()
+        if bunit not in ['Jy', 'mJy']:
+            raise ValueError('bunit must be (m)Jy.')
+        tosum *= self.convertBunit(bunit=bunit+'/pixel')
+        return self.velax, np.array([np.sum(c) for c in tosum])
 
     # Get the Radial profile of the second moment.
     def getSecondProfile(self, bins=None, nbins=50, lowchan=0,
@@ -346,44 +376,7 @@ class cubeclass:
         kernel += 2 * b * grid[:, None] * grid[None, :]
         return np.exp(-kernel) / 2. / np.pi / sig_x / sig_y
 
-    def convolvedContinuum(self, beam, snr=None):
-        """Return the convolved continuum for zeroth moment subtraction."""
-        try:
-            return self.convolved_continuum[beam.maj, beam.min, beam.pa, snr]
-        except:
-            cont = np.trapz(self.cont, self.velax, axis=0)
-            cont = self.convolveChannel(cont, beam, snr=snr)
-            self.convolved_continuum[beam.maj, beam.min, beam.pa, snr] = cont
-        return self.convolved_continuum[beam.maj, beam.min, beam.pa, snr]
 
-    def convolveChannel(self, channel, beam, snr=None):
-        """Returns the convolved channel or moment map with the beam."""
-        if snr is not None:
-            channel = self.addNoise(channel, snr=snr)
-        return convolve(channel, self.beamKernel(beam))
-
-    def addNoise(self, channel, snr):
-        """Add noise to the channel."""
-        """Need to check if this is for channel or for zeroth."""
-        noise = np.nanmax(channel) / snr
-        noise *= np.random.randn(channel.size).reshape(channel.shape)
-        channel += noise
-        return channel
-
-    def convolveCube(self, beam, snr=None):
-        """Convolve the full datacube with a beam."""
-        try:
-            return self.convolved_cubes[beam.maj, beam.min, beam.pa, snr]
-        except:
-            print 'Convolving cube. May take a while.'
-        if snr is  None:
-            datacube = self.data
-        else:
-            datacube = [self.addNoise(chan, snr) for chan in self.data]
-            datacube = np.array(datacube)
-        convcube = [self.convolveChannel(chan, beam) for chan in datacube]
-        self.convolved_cubes[beam.maj, beam.min, beam.pa, snr] = np.array(convcube)
-        return self.convolved_cubes[beam.maj, beam.min, beam.pa, snr]
 
     #### Brightness unit conversions. ##########################################
 
@@ -406,38 +399,49 @@ class cubeclass:
             tounit['mjypixel'] = 1e-3 / self.JanskytoKelvin()
         return bunit, tounit
 
-    def convertBunit(self, bunit, beam=None):
+    def parseBunitKwargs(self, **kwargs):
+        """Parse the kwargs appropriate for the brightness unit conversion."""
+        try:
+            bunit = kwargs['bunit']
+        except:
+            bunit = None
+        if bunit is not None:
+            bunit = bunit.lower().replace('/', '')
+            bunit = bunit.replace('per', '').replace(' ', '')
+            if bunit not in ['jybeam', 'mjybeam', 'jypixel', 'mjypixel', 'k']:
+                raise ValueError("bunit must be (m)Jy/pixel, (m)Jy/beam or K.")
+        try:
+            beam = kwargs['beam']
+            if beam is not None:
+                beam = beamclass(beam)
+        except:
+            beam = None
+        return bunit, beam
+
+    def convertBunit(self, **kwargs):
         """Convert the brightness units to bunit."""
+        bunit, beam = self.parseBunitKwargs(**kwargs)  
         if bunit is None:
             return 1.
-        bunit = bunit.lower().replace('/', '')
-        bunit = bunit.replace('per', '').replace(' ', '')
-        if bunit not in ['jybeam', 'mjybeam', 'jypixel', 'mjypixel', 'k']:
-            raise ValueError("bunit must be (m)Jy/pixel, (m)Jy/beam or K.")
-        # Convert to requested unit.
-        if bunit == 'k':
+        elif bunit == 'k':
             return self.tounit['k']
         elif 'mjy' in bunit:
             rescale = self.tounit['mjypixel']
         elif 'jy' in bunit:
             rescale = self.tounit['jypixel']
-        # Add the beam rescaling.
+            
+            
         if ('beam' in bunit and beam is not None):
             rescale *= self.pixtobeam(beam)
         elif ('beam' in bunit and beam is None):
             print 'Warning, no beam specified! Reverting to per pixel.'
         return rescale
 
-    def JanskytoKelvin(self, beam=None):
-        """Jansky to Kelvin conversion. If no beam specified will return Jy/pix,
-        else will return Jy/beam."""
-        jy2k = 10**-26 * sc.c**2.
+    def JanskytoKelvin(self):
+        """Jansky to Kelvin conversion."""
+        jy2k = 10**-26 * sc.c**2. / sc.k
         jy2k /= 2. * fits.getval(self.filename, 'restfreq', 0)**2.
-        jy2k /= sc.k
-        if beam is None:
-            jy2k /= np.radians(fits.getval(self.filename, 'cdelt2', 0))**2.
-        else:
-            jy2k /= beam.area
+        jy2k /= np.radians(fits.getval(self.filename, 'cdelt2', 0))**2.
         return jy2k
 
 
