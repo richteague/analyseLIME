@@ -147,8 +147,7 @@ class cube:
 
     def maximumFirst(self, **kwargs):
         """First moment from the maximum value."""
-        raise NotImplementedError()
-        return
+        return np.take(self.velax, np.argmax(self.line, axis=0))
 
     def subtractContinuum(self, **kwargs):
         """Return the line-only data."""
@@ -194,5 +193,5 @@ class cube:
         except:
             value = kwargs.get(key, np.nan)
         if np.isnan(value):
-            print('A value for {} cannot be read.', key)
+            print('A value for', key, 'cannot be read.')
         return value
