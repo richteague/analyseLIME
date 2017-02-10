@@ -140,9 +140,9 @@ class population:
         elif unit == 'kgccm':
             sigma *= sc.m_p * self.LAMDA.mu
         if trim:
-            return np.array([self.xgrid[sigma > 0], 2.*sigma[sigma > 0]])
+            return np.array([self.xgrid[sigma > 0], sigma[sigma > 0]])
         else:
-            return np.array([self.xgrid, 2.*sigma])
+            return np.array([self.xgrid, sigma])
     
     # Return the collider density structure.
     def getDensity(self):

@@ -44,6 +44,7 @@ class cube:
         # may be slightly wrong.
 
         self.cont, self.line = self.subtractContinuum(**kwargs)
+        self.total_intensity = self.getZeroth()
 
         return
 
@@ -147,11 +148,14 @@ class cube:
 
     def maximumFirst(self, **kwargs):
         """First moment from the maximum value."""
-        return np.take(self.velax, np.argmax(self.line, axis=0))
+        vidx = np.argmax(self.line, axis=0)
+        vmax = np.take(self.velax, vidx)
+        return np.where(vidx != 0, vmax, np.nan)
 
     def subtractContinuum(self, **kwargs):
         """Return the line-only data."""
-        cont = self.data[int(kwargs.get('cont_chan', 0))]
+        cchan = kwargs.get('cont_chan', 0)
+        cont = self.data[cchan].copy()
         if not all([np.isclose(np.sum(cont - self.data[i]), 0)
                     for i in [1, -1, -2]]):
             print('Potential line emission in continuum channels.')

@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from string import letters
 from astropy.io import fits
@@ -6,7 +5,7 @@ import scipy.constants as sc
 from astropy.io.fits import getval
 from astropy.convolution import convolve
 from matplotlib.patches import Ellipse
-from scipy.ndimage.interpolation import rotate
+
 
 class beamclass:
     """Beam object to pass to convolution functions."""
@@ -41,12 +40,21 @@ class beamclass:
 class cubeclass:
     """Datacube read in from LIME."""
     def __init__(self, path, dist=None, inc=None, pa=None):
+
         self.filename = path
+
         self.velax = self.getVelocityAxis()
+        self.nchan = self.velax.size
+
         self.posax = self.getPositionAxis()
+        self.x0 = getval(self.filename, 'crpix1', 0) - 1.
+        self.y0 = getval(self.filename, 'crpix2', 0) - 1.
+        self.npix = self.posax.size
+
         self.specax = self.getSpectralAxis()
         self.data = fits.getdata(self.filename, 0)
-        self.cont = self.data[0][None, :, :] * np.ones(self.velax.size)[:, None, None]
+        c = self.data[0]
+        self.cont = c[None, :, :] * np.ones(self.nchan)[:, None, None]
         self.line = None
 
         # Try and read in values from header, should work with makeLIME.py.
@@ -79,12 +87,7 @@ class cubeclass:
         else:
             self.pa = pa
 
-        # Commonly used values.
-        self.x0 = getval(self.filename, 'crpix1', 0) - 1.
-        self.y0 = getval(self.filename, 'crpix2', 0) - 1.
-        self.nchan = self.velax.size
-        self.npix = self.posax.size
-
+        # Commonly used values
         self.bunit, self.tounit = self.brightnessconversions()
         self.x = self.posax[None, :]
         self.y = self.posax[:, None] / np.cos(self.inc)
@@ -96,7 +99,6 @@ class cubeclass:
         self.sgnlperchan = None
         self.line = None
         return
-
 
     def estimateSignal(self):
         """Estimates the signal per channel."""
@@ -133,87 +135,85 @@ class cubeclass:
         """Returns the spectral axis in Hz."""
         nu = getval(self.filename, 'restfreq', 0)
         return self.getVelocityAxis() * nu / sc.c
-        
+
     def convolve2D(self, arr, **kwargs):
         """Convolves a 2D array with a beam."""
         beam = kwargs.get('beam', None)
         if beam is None:
             return arr
         return convolve(arr, self.beamKernel(beamclass(beam)))
-    
+
     def noiseFactor(self, **kwargs):
         """Rescale the noise to account for convolution."""
         beam = kwargs.get('beam', None)
         if beam is None:
             return 1.
-        beam = beamclass(beam) 
+        beam = beamclass(beam)
         return max(1, 1.07 * np.power(beam.eff / self.pixscale, 1.326))
-        
+
     def addNoise(self, arr, onlychannel=False, **kwargs):
         """Add noise to the array (e.g. a channel or moment map)."""
         snr = kwargs.get('snr', None)
         if snr is None:
-            return arr    
+            return arr
         if onlychannel:
             signal = self.estimateSignal()
         else:
             signal = np.nanmax(self.getZeroth())
         noise = signal * self.noiseFactor(**kwargs) / snr
         noise *= np.random.random(arr.shape)
-        return arr + noise                
-    
+        return arr + noise
+
     def ZerothDict(self, **kwargs):
         """Keywords for the pre-calculated zeroth moment dictionary."""
         beam = beamclass(kwargs.get('beam', None))
-        return (kwargs.get('removeCont', True), beam.min, beam.maj, 
+        return (kwargs.get('removeCont', True), beam.min, beam.maj,
                 beam.pa, kwargs.get('snr', None))
-        
+
     def getZeroth(self, **kwargs):
         """Returns the zeroth moment map."""
-        
-        # See if the moment has been previously calculated.       
+
+        # See if the moment has been previously calculated.
         try:
             zeroth = self.conv_zeroths[self.ZerothDict(**kwargs)].copy()
-            zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+            zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs)
             return zeroth
         except:
             pass
-            
+
         # If not, calculate it.
         zeroth = np.trapz(self.data.copy(), self.velax, axis=0)
         zeroth = self.addNoise(zeroth, **kwargs)
         zeroth = self.convolve2D(zeroth, **kwargs)
-        
+
         # Remove the continuum.
         if kwargs.get('removeCont', False):
             continuum = np.trapz(self.cont.copy(), self.velax, axis=0)
             continuum = self.addNoise(continuum, **kwargs)
             continuum = self.convolve2D(continuum, **kwargs)
             zeroth -= continuum
-            
-        # Add the dictionary of pre-calculated zeroth moments. 
+
+        # Add the dictionary of pre-calculated zeroth moments.
         self.conv_zeroths[self.ZerothDict(**kwargs)] = zeroth.copy()
-        zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+        zeroth *= self.getMask(**kwargs) * self.convertBunit(**kwargs)
         return zeroth
 
     def getZerothProfile(self, bins=None, nbins=50, **kwargs):
         """Returns the radial profile of the zeroth moment."""
-        
+
         # Determine the bins.
         if bins is None:
             bins = np.linspace(0.05, 1.2 * self.posax.max(), nbins + 1)
         else:
             nbins = len(bins) - 1
         ridxs = np.digitize(self.rvals.ravel(), bins)
-        
+
         # Calculate the average and standard deviation for each bin.
         zeroth = np.nan_to_num(self.getZeroth(**kwargs).ravel())
         avg = [np.nanmean(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         std = [np.nanstd(zeroth[ridxs == r]) for r in range(1, nbins+1)]
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
-
-
 
     def getMaximum(self, removeCont=True, bunit=None, beamparams=None):
         raise NotImplementedError('Not done yet!')
@@ -229,40 +229,38 @@ class cubeclass:
         else:
             c = int(c)
         return c
-        
+
     def ChannelDict(self, c, **kwargs):
         """Keywords for the pre-calculated channel dictionary."""
         beam = beamclass(kwargs.get('beam', None))
-        return (self.chanidx(c), kwargs.get('removeCont', True), 
+        return (self.chanidx(c), kwargs.get('removeCont', True),
                 beam.min, beam.maj, beam.pa, kwargs.get('snr', None))
-
 
     def getChannel(self, c, **kwargs):
         """Returns a channel. Specify either a channel index for velocity."""
-        
+
         # First see if the channel has already been called.
         try:
             chan = self.conv_chans[self.ChannelDict(c, **kwargs)].copy()
-            return chan * self.getMask(**kwargs) * self.convertBunit(**kwargs) 
+            return chan * self.getMask(**kwargs) * self.convertBunit(**kwargs)
         except:
             pass
-            
+
         # If not, calculate it.
         chan = self.data[self.chanidx(c)].copy()
         chan = self.addNoise(chan, onlychannel=True, **kwargs)
         chan = self.convolve2D(chan, **kwargs)
-        
-        # Remove the continuum.           
+
+        # Remove the continuum.
         if kwargs.get('removeCont', True):
             continuum = self.data[0].copy()
             continuum = self.addNoise(continuum, onlychannel=True, **kwargs)
             continuum = self.convolve2D(continuum, **kwargs)
             chan -= continuum
-        
+
         # Add to the dictionary of pre-calculated channels and return.
         self.conv_chans[self.ChannelDict(c, **kwargs)] = chan.copy()
         return chan * self.getMask(**kwargs) * self.convertBunit(**kwargs)
-
 
     def getMaximumProfile(self, bins=None, nbins=50, removeCont=True):
         """Return the maximum brightness along the line of sight."""
@@ -285,12 +283,11 @@ class cubeclass:
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
-
     def getFirst(self, **kwargs):
         """Returns the first moment of the data."""
         weights = self.onlyline()
         noemission = np.where(np.sum(weights, axis=0) == 0, True, False)
-        weights = np.where(weights == 0.0, 
+        weights = np.where(weights == 0.0,
                            1e-30 * np.random.random(weights.shape),
                            weights)
         vcube = self.velax[:, None, None] * np.ones(weights.shape)
@@ -325,7 +322,7 @@ class cubeclass:
             return np.where(mask == mask.min(), fill, 1.)
         else:
             return 1.
-            
+
     def getFluxDensity(self, bunit='Jy', removeCont=True):
         """Return the flux density."""
         if removeCont:
@@ -358,9 +355,6 @@ class cubeclass:
         rad = np.average([bins[1:], bins[:-1]], axis=0)
         return np.array([rad, avg, std])
 
-
-    #### Convolution functions. ################################################
-
     def beamKernel(self, beam):
         """Generate a beam kernel for the convolution."""
         sig_x = beam.maj / self.pixscale / 2. / np.sqrt(2. * np.log(2.))
@@ -375,10 +369,6 @@ class cubeclass:
         kernel = c * grid[:, None]**2 + a * grid[None, :]**2
         kernel += 2 * b * grid[:, None] * grid[None, :]
         return np.exp(-kernel) / 2. / np.pi / sig_x / sig_y
-
-
-
-    #### Brightness unit conversions. ##########################################
 
     def brightnessconversions(self):
         """Calculate the conversion brightness unit factors."""
@@ -420,7 +410,7 @@ class cubeclass:
 
     def convertBunit(self, **kwargs):
         """Convert the brightness units to bunit."""
-        bunit, beam = self.parseBunitKwargs(**kwargs)  
+        bunit, beam = self.parseBunitKwargs(**kwargs)
         if bunit is None:
             return 1.
         elif bunit == 'k':
@@ -429,8 +419,7 @@ class cubeclass:
             rescale = self.tounit['mjypixel']
         elif 'jy' in bunit:
             rescale = self.tounit['jypixel']
-            
-            
+
         if ('beam' in bunit and beam is not None):
             rescale *= self.pixtobeam(beam)
         elif ('beam' in bunit and beam is None):
@@ -444,17 +433,12 @@ class cubeclass:
         jy2k /= np.radians(fits.getval(self.filename, 'cdelt2', 0))**2.
         return jy2k
 
-
-    #### Plotting helper functions. ############################################
-
     def plotIsoRadius(self, isoradius, M_star, vunit='km/s'):
         """Plot contours of iso-radius in the PV diagram."""
         p = self.posax * self.dist * sc.au
         r = isoradius * sc.au
         v = np.sqrt(sc.G * M_star * 2e30 / r) * np.sin(self.inc)
         return v * np.cos(np.arctan2(np.sqrt(r**2 - p**2), p))
-
-
 
     def plotBeam(self, ax, beamparams, x=0.1, y=0.1, color='k',
                  hatch='/////////', linewidth=1.25):
@@ -463,11 +447,11 @@ class cubeclass:
         beam = beamclass(beamparams)
         x_pos = x * (ax.get_xlim()[1] - ax.get_xlim()[0]) + ax.get_xlim()[0]
         y_pos = y * (ax.get_ylim()[1] - ax.get_ylim()[0]) + ax.get_ylim()[0]
-        ax.add_patch(Ellipse((x_pos, y_pos), width=beam.min, height=beam.maj,
-                             angle=np.degrees(beam.pa), fill=False, hatch=hatch,
-                             lw=linewidth, color=color, transform=ax.transData))
+        ax.add_patch(Ellipse((x_pos, y_pos), width=beam.min,
+                             height=beam.maj, angle=np.degrees(beam.pa),
+                             fill=False, hatch=hatch, lw=linewidth,
+                             color=color, transform=ax.transData))
         return
-
 
     def plotOutline(self, ax, level=0.99, lw=.5, c='k', ls='-'):
         """Plot the outline of the emission."""
